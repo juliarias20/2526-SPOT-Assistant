@@ -1,0 +1,9 @@
+{
+    "id": "ex001",
+    "command": "Bring me something to write with.",
+    "gold_intent": "retrieve_object", 
+    "gold_steps": ["navigate", "select_object", "pick_up", "deliver"],
+    "gold_object": "something_to_write_with", 
+    "ambiguous": false,
+    "needs_clarification": false
+}
