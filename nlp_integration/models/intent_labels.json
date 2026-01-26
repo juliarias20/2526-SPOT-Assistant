@@ -1,0 +1,8 @@
+{
+    "retrieve_object": "User wants the robot to fetch or bring an object to them.",
+    "locate_object": "User wants the robot to find or locate an object.",
+    "scan_environment": "User wants ther robot to look around or inspect the environment.",
+    "navigate": "User wants the robot to go to a location.",
+    "multi_step_retrieve": "User instruction contains multiple steps including retrieval.",
+    "multi_step_manipulation": "User instruction contains multiple steps including moving or placing objects."
+}
