@@ -1,0 +1,45 @@
+{
+    "version": "1.0",
+    "raw_command": "string",
+    "timestamp_utc": "ISO-8601 string",
+    "language": "en",
+    "intent": {
+        "label": "string",
+        "confidence": "number",
+        "is_ambiguous": "boolean",
+        "ambiguity_reason": "string|null"
+    },
+    "entities": {
+        "verbs": ["string"],
+        "objects": [
+            {
+                "text": "string",
+                "head": "string",
+                "modifiers": ["string"],
+                "role": "target|source|destination|unkown"
+            }
+        ],
+        "locations":["string"]
+    },
+    "task_graph": {
+        "nodes": [
+            {
+                "id": "t1",
+                "action": "navigate|scan|select_object|pick_up|deliver|locate|unknown",
+                "params": {},
+                "confidence": "number"
+            }
+        ],
+        "edges": [
+            {
+                "from": "t1",
+                "to": "t2",
+                "type": "sequence"
+            }
+        ]
+    },
+    "clarification": {
+        "required": "boolean",
+        "questions": ["string"]
+    }
+}
