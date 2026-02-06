@@ -23,6 +23,7 @@ from bosdyn.api import geometry_pb2, image_pb2, manipulation_api_pb2
 from bosdyn.client.image import ImageClient
 from bosdyn.client.manipulation_api_client import ManipulationApiClient
 from bosdyn.client.robot_command import RobotCommandClient, blocking_stand
+from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
 
 import argparse
 import sys
@@ -30,30 +31,36 @@ import time
 import os
 import cv2
 import numpy as np
+from dotenv import load_dotenv
+from pathlib import Path
 
 def main():
 
-    # Establish SPOT variables from .env file 
-    SPOT_USERNAME = os.getenv('SPOT_USERNAME')
-    SPOT_PASSWORD = os.getenv('SPOT_PASSWORD')
-    SPOT_IP = os.getenv('SPOT_IP')
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=env_path)
 
-    if not all(SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP):
-        raise ValueError("SPOT credentials not found in file. Please try again.")
-    
-    # Create SPOT SDK variables for robot configuration
-    sdk = bosdyn.client.create_standard_sdk('StandClient')
-    robot = sdk.create_robot(SPOT_USERNAME)
-    bostyn.client.util.authenticate(robot)
+    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
+    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
+    SPOT_IP = os.getenv("SPOT_IP")
 
-    # Authenticate robot with environmental variables
+    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
+        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
+
+    sdk = bosdyn.client.create_standard_sdk("InitialDemoClient")
+    robot = sdk.create_robot(SPOT_IP)
+
     robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
     robot.time_sync.wait_for_sync()
 
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    lease_client.acquire()
+    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
+
     print("Starting demo...")
 
+    image_path = Path(__file__).resolve().parent / "test_image.jpg"
     #Establish data collection by importing the image
-    cv_image = cv2.imread("IMAGE NAME")
+    cv_image = cv2.imread(str(image_path))
 
     # Convert to RGB formatting for program to analyze
     cv_image_rgb = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
@@ -70,12 +77,12 @@ def main():
 
     # Count red pixels to identify the ratio (analyzed)
     red_pixels = cv2.countNonZero(red_mask)
-    total_pixels = image_rgb.shape[0] * image_rgb.shape[1]
+    total_pixels = cv_image_rgb.shape[0] * cv_image_rgb.shape[1]
     red_ratio = red_pixels / total_pixels
 
     # if data confirmed visual conditions: 
     # Mobilize SPOT to symbolize robotic integration  ---->  SPOT will stand: 
-    if red_radio > #include number: 
+    if red_ratio > 0.10: 
         robot.logger.info('Sending "stand" command to SPOT')
         command_client = robot.ensure_client(RobotCommandClient.default_service_name)
         blocking_stand(command_client, timeout_sec = 10)
