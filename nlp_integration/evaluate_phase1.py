@@ -47,6 +47,20 @@ def main():
         sys_amb.append(out["clarification"]["required"])
         gold_amb.append(bool(r.get("needs_clarification", False)))
 
+    print("\n=== False Positives (system asked to clarify, gold says no) ===")
+    for r in rows:
+        out = engine.interpret(r["command"])
+        sa = out["clarification"]["required"]
+        ga = bool(r.get("needs_clarification", False))
+        if sa and not ga:
+            intent = out["intent"]
+            print(f'{r["id"]}: "{r["command"]}"')
+            print(f'  pred_intent={intent["label"]} conf={intent["confidence"]} '
+                f'second={intent.get("second_confidence")} delta={intent.get("delta")} '
+                f'amb={intent["is_ambiguous"]} reason={intent["ambiguity_reason"]}')
+            print(f'  questions={out["clarification"]["questions"]}\n')
+
+
 
     # Baselines
     kw_intents = [keyword_baseline(r["command"])["intent"] for r in rows]
