@@ -14,7 +14,7 @@
 {"id": "ex014", "command": "Go to the table.", "gold_intent": "navigate", "gold_steps": ["navigate"], "gold_object": "table", "ambiguous": false, "needs_clarification": false}
 {"id": "ex015", "command": "Navigate to the couch.", "gold_intent": "navigate", "gold_steps": ["navigate"], "gold_object": "couch", "ambiguous": false, "needs_clarification": false}
 {"id": "ex016", "command": "Go to the bookshelf.", "gold_intent": "navigate", "gold_steps": ["navigate"], "gold_object": "bookshelf", "ambiguous": false, "needs_clarification": false}
-{"id": "ex017", "command": "Go over there.", "gold_intent": "navigate", "gold_steps": ["navigate"], "gold_object": null, "ambiguous": false, "needs_clarification": false}
+{"id": "ex017", "command": "Go over there.", "gold_intent": "navigate", "gold_steps": ["navigate"], "gold_object": null, "ambiguous": true, "needs_clarification": true}
 {"id": "ex018", "command": "Scan the room.", "gold_intent": "scan_environment", "gold_steps": ["scan"], "gold_object": null, "ambiguous": false, "needs_clarification": false}
 {"id": "ex019", "command": "Look around the desk area.", "gold_intent": "scan_environment", "gold_steps": ["scan"], "gold_object": "desk_area", "ambiguous": false, "needs_clarification": false}
 {"id": "ex020", "command": "Inspect the table.", "gold_intent": "scan_environment", "gold_steps": ["scan"], "gold_object": "table", "ambiguous": false, "needs_clarification": false}
