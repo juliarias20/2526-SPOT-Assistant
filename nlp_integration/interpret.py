@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
-
+from spacy.matcher import PhraseMatcher
 import spacy
 from sentence_transformers import SentenceTransformer, util
 
@@ -50,24 +50,124 @@ class Phase1Interpreter:
             for k, v in self.intent_labels.items()
         }
 
+    def _init_clause_matcher(self):
+        """
+        Initialize a PhraseMatcher to identify clause connectors for splitting.
+        """
+        if hasattr(self, "_clause_matcher") and self._clause_matcher is not None:
+            return
+        
+        self._clause_matcher = PhraseMatcher(self.nlp.vocab, attr="LOWER")
+
+        #Multi-word connectors (order matters; longer phrases should be detected)
+        phrases = [
+            "and then",
+            "after that",
+            "then",
+            "next",
+            "finally",
+            "followed by",
+            "so that",
+            "in order to",
+            "before",
+            "after",
+            "once",
+            "when",
+            "while",
+            "if",
+            "unless",
+        ]
+
+        patterns = [self.nlp.make_doc(p) for p in phrases]
+        self._clause_matcher.add("CONNECTOR_PHRASE", patterns)
+
+        # Map Phrase -> relation label
+        self._connector_relation = {
+            "and then": "sequence",
+            "after that": "sequence",
+            "then": "sequence",
+            "next": "sequence",
+            "finally": "sequence",
+            "followed by": "sequence",
+            "before": "temporal",
+            "after": "temporal",
+            "once": "temporal",
+            "when": "temporal",
+            "while": "temporal:",
+            "if": "condition",
+            "unless": "condition",
+            "so that": "purpose",
+            "in order to": "purpose",
+        }
+        
     def split_clauses(self, text: str) -> List[str]:
         """
-        Very lightweight splitter to support Phase II later; 
-        fo Phase I we keep it simple
+        Phase II clause splitter.
+
+        Returns:
+            Lis[{"order": int, "text": str, "connector": Optional[str], "relation": str}]
+
+        Notes:
+        - Uses PhraseMatcher for multiword connectors.
+        - Also splits on ';' and strong punctuation boundaries.
+        - Also attempts to split on 'and' when it likely joins two verbs/actions.
         """
+        self._init_clause_matcher()
         doc = self.nlp(text)
-        clauses: List[List[str]] = []
-        current: List[str] = []
-        for token in doc:
-            if token.text.lower() in CONNECTORS:
-                if current:
-                    clauses.append(current)
-                    current = []
-            else:
-                current.append(token.text)
-        if current:
-            clauses.append(current)
-        return [" ".join(c).strip() for c in clauses if "".join(c).strip()]
+
+        # 1) Gather connector spans from PhraseMatcher
+        matches = self._clause_matcher(doc)
+        spans = []
+        for _, start, end in matches:
+            span_text = doc[start:end].text.lower().strip()
+            spans.append((start, end, span_text))
+        spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+
+        # Deduplicate overlapping spans: keep longest when overlaps
+        filtered = []
+        last_end = -1
+        for start, end, stext in spans: 
+            if start < last_end:
+                continue
+            filtered.append((start, end, stext))
+            last_end = end
+
+        # 2) Build split points (token indices) at connector starts
+        split_points = []
+        connector_at = {} # split_index -> connector phrase
+        for start, end, stext in filtered:
+            split_points.append(start)
+            connector_at[start] = stext
+
+        # 3) Add punctuation-based split points
+        for i, tok in enumerate(doc):
+            # split *after* this token
+            if i + 1 < len(doc):
+                split_points.append(i + 1)
+
+        # 4) Add "and" heuristic splits when likely joining actions
+        # Heuristic: token "and" where left and right both have verb nearby
+        for i, tok in enumerate(doc):
+            if tok.lower_ == "and":
+                left_has_verb = any(t.pos_ == "VERB" for t in doc[max(0, i-4):i])
+                right_has_verb = any(t.pos_ == "VERB" for t in doc[i+1:min(len(doc), i+5)])
+                if left_has_verb and right_has_verb:
+                    split_points.append(i) #split at 'and'
+                    connector_at[i] = "and"
+
+        # 5) Create sorted unique split points in bounds (ignore 0)
+        split_points = sorted({p for p in split_points if 0 < p < len(doc)})
+
+        # 6) Slice doc into segments
+        segments = []
+        start = 0
+        prev_connector = None
+
+        for sp in split_points:
+            seg = doc[start:sp].text.strip()
+            if seg:
+                segments.append((seg, prev_connector))
+            
     
     def extract_verbs_objects(self, text: str) -> Tuple[List[str], List[Dict]]:
         doc = self.nlp(text)
