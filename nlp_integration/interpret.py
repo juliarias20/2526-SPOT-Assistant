@@ -197,6 +197,8 @@ class Phase1Interpreter:
         out: List[Dict] = []
         for idx, (seg_text, conn) in enumerate(segments, start=1):
             cleaned = strip_leading_connector(seg_text, conn)
+            cleaned = cleaned.strip()
+            cleaned = re.sub(r"[,\.;:]+$", "", cleaned).strip()
 
             if conn is None:
                 relation = "root"
@@ -213,6 +215,51 @@ class Phase1Interpreter:
             })
 
         return out
+    
+    def build_phase2_plan(self, clauses: List[Dict]) -> Dict:
+        """
+        Build a clause-level plan graph for Phase II. 
+        - Each clause becomes a node (c1, c2, ...)
+        - We classify intent per clause (same classifier as PHase I)
+        - Add simple edges base do on clause relations
+        """
+
+        steps = []
+        edges = []
+
+        # Create nodes
+        for c in clauses:
+            c_intent = self.classify_intent(c["text"])
+            step_type = "condition" if c["relation"] == "condition" else "action"
+            
+            steps.append({
+                "id": f"c{c['order']}",
+                "type": step_type,
+                "text": c["text"],
+                "connector": c["connector"],
+                "relation": c["relation"],
+                "intent": {
+                    "label": c_intent.label,
+                    "confidence": round(c_intent.confidence, 3),
+                    "second_confidence": round(c_intent.second_confidence, 3),
+                    "delta": round(c_intent.delta, 3),
+                }
+            })
+
+        # Create edges between adjacent clauses
+        for i in range (len(clauses) - 1):
+            a = clauses[i]
+            b = clauses[i + 1]
+            from_id = f"c{a['order']}"
+            to_id = f"c{b['order']}"
+
+            if a ["relation"] == "condition":
+                edges.append({"from": from_id, "to": to_id, "type": "condition_of"})
+            elif a["relation"] in ("sequence", "coordination", "temporal", "purpose"):
+                edges.append({"from": from_id, "to": to_id, "type": "sequence"})
+            # root -> next: no edge required
+
+        return {"steps": steps, "edges": edges}
     
     def extract_verbs_objects(self, text: str) -> Tuple[List[str], List[Dict]]:
         doc = self.nlp(text)
@@ -332,6 +379,7 @@ class Phase1Interpreter:
         task_graph = self.build_min_task_graph(intent, text)
         questions = self.clarification_questions(text, intent, verbs, objects)
         clauses = self.split_clauses(text)
+        phase2_plan = self.build_phase2_plan(clauses)
 
         result = {
             "version": "1.0",
@@ -352,6 +400,9 @@ class Phase1Interpreter:
                 "locations": [], # reserved for later
             },
             "clauses": clauses,
+            "phase2": {
+                "plan": phase2_plan
+            },
             "task_graph": task_graph,
             "clarification": {
                 "required": len(questions) > 0,

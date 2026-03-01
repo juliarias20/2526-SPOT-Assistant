@@ -19,9 +19,10 @@
 - Spacy comes with labeling of unstructured words and phrases and already trained
 
 ## Next steps
-- Implement Phase II clause splitter
+- Add punctuation stripping (tiny quality win)
 - Build evaluate_phase2.py
 - Implement task graph v2
+- Expand commands_gold.jsonl with gold_clause_intents for multi-step commands
 - Stub SPOT interface
 - Draft presentation outline
 - Polish Phase II metrics
@@ -31,5 +32,6 @@
 - Identify experimental plots to show
 
 ## Finished
+- Implement Phase II clause splitter
 - Tune ambiguity thresholds (ambiguity_threshold, delta_threshold) so clarification detection improves
 - Completed Expand commands_gold.jsonl to 50 commands 
