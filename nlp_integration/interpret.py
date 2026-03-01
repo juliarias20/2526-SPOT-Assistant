@@ -93,24 +93,19 @@ class Phase1Interpreter:
             "after": "temporal",
             "once": "temporal",
             "when": "temporal",
-            "while": "temporal:",
+            "while": "temporal",
             "if": "condition",
             "unless": "condition",
             "so that": "purpose",
             "in order to": "purpose",
         }
         
-    def split_clauses(self, text: str) -> List[str]:
+    def split_clauses(self, text: str) -> List[Dict]:
         """
         Phase II clause splitter.
 
         Returns:
-            Lis[{"order": int, "text": str, "connector": Optional[str], "relation": str}]
-
-        Notes:
-        - Uses PhraseMatcher for multiword connectors.
-        - Also splits on ';' and strong punctuation boundaries.
-        - Also attempts to split on 'and' when it likely joins two verbs/actions.
+            List[{"order": int, "text": str, "connector": Optional[str], "relation": str}]
         """
         self._init_clause_matcher()
         doc = self.nlp(text)
@@ -123,51 +118,101 @@ class Phase1Interpreter:
             spans.append((start, end, span_text))
         spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
 
-        # Deduplicate overlapping spans: keep longest when overlaps
+        # Deduplicate overlapping spans: keep earliest non-overlapping longest
         filtered = []
         last_end = -1
-        for start, end, stext in spans: 
+        for start, end, stext in spans:
             if start < last_end:
                 continue
             filtered.append((start, end, stext))
             last_end = end
 
-        # 2) Build split points (token indices) at connector starts
-        split_points = []
-        connector_at = {} # split_index -> connector phrase
+        split_points: List[int] = []
+        connector_at: Dict[int, str] = {}
+
+        # If a connector appears at the beginning (token 0), treat it as the connector
+        # for the first clause instead of trying to split at 0.
+        leading_connector = None
+        leading_end = 0
+
         for start, end, stext in filtered:
+            if start == 0:
+                leading_connector = stext
+                leading_end = end
+                continue
             split_points.append(start)
             connector_at[start] = stext
 
-        # 3) Add punctuation-based split points
+        # 2) Strong punctuation splits (NOT every token)
+        STRONG_PUNCT = {";", ":", ".", "!", "?"}
         for i, tok in enumerate(doc):
-            # split *after* this token
-            if i + 1 < len(doc):
+            if tok.text in STRONG_PUNCT and i + 1 < len(doc):
                 split_points.append(i + 1)
 
-        # 4) Add "and" heuristic splits when likely joining actions
-        # Heuristic: token "and" where left and right both have verb nearby
+        # 3) Comma split ONLY for introductory conditional/temporal clause: "If/When/Once/Unless/While ..., <main>"
+        for i, tok in enumerate(doc):
+            if tok.text == "," and i + 1 < len(doc):
+                left = doc[:i].text.lower().strip()
+                if left.startswith(("if ", "when ", "once ", "unless ", "while ")):
+                    split_points.append(i + 1)
+
+        # 4) "and" heuristic splits when likely joining actions (keep yours)
         for i, tok in enumerate(doc):
             if tok.lower_ == "and":
-                left_has_verb = any(t.pos_ == "VERB" for t in doc[max(0, i-4):i])
-                right_has_verb = any(t.pos_ == "VERB" for t in doc[i+1:min(len(doc), i+5)])
+                left_has_verb = any(t.pos_ == "VERB" for t in doc[max(0, i - 4):i])
+                right_has_verb = any(t.pos_ == "VERB" for t in doc[i + 1:min(len(doc), i + 5)])
                 if left_has_verb and right_has_verb:
-                    split_points.append(i) #split at 'and'
+                    split_points.append(i)
                     connector_at[i] = "and"
 
-        # 5) Create sorted unique split points in bounds (ignore 0)
+        # 5) Unique, sorted, in-bounds split points (ignore 0)
         split_points = sorted({p for p in split_points if 0 < p < len(doc)})
 
         # 6) Slice doc into segments
         segments = []
         start = 0
-        prev_connector = None
+        prev_connector = leading_connector  # if "if/when/..." at start, first clause gets that label
 
         for sp in split_points:
             seg = doc[start:sp].text.strip()
             if seg:
                 segments.append((seg, prev_connector))
-            
+            prev_connector = connector_at.get(sp, None)
+            start = sp
+
+        tail = doc[start:].text.strip()
+        if tail:
+            segments.append((tail, prev_connector))
+
+        # 7) Clean leading connector text from segment
+        def strip_leading_connector(seg_text: str, conn: Optional[str]) -> str:
+            if not conn:
+                return seg_text
+            c = conn.lower().strip()
+            s = seg_text.strip()
+            if s.lower().startswith(c + " "):
+                return s[len(c):].strip()
+            return s
+
+        out: List[Dict] = []
+        for idx, (seg_text, conn) in enumerate(segments, start=1):
+            cleaned = strip_leading_connector(seg_text, conn)
+
+            if conn is None:
+                relation = "root"
+            elif conn == "and":
+                relation = "coordination"
+            else:
+                relation = self._connector_relation.get(conn, "unknown")
+
+            out.append({
+                "order": idx,
+                "text": cleaned,
+                "connector": conn,
+                "relation": relation
+            })
+
+        return out
     
     def extract_verbs_objects(self, text: str) -> Tuple[List[str], List[Dict]]:
         doc = self.nlp(text)
@@ -286,6 +331,7 @@ class Phase1Interpreter:
         intent = self.classify_intent(text)
         task_graph = self.build_min_task_graph(intent, text)
         questions = self.clarification_questions(text, intent, verbs, objects)
+        clauses = self.split_clauses(text)
 
         result = {
             "version": "1.0",
@@ -305,6 +351,7 @@ class Phase1Interpreter:
                 "objects": objects,
                 "locations": [], # reserved for later
             },
+            "clauses": clauses,
             "task_graph": task_graph,
             "clarification": {
                 "required": len(questions) > 0,
