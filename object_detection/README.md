@@ -7,7 +7,7 @@
     - Windows 11
     - Python 3.10.11
 
-- Install the required libraries: `pip install -r object-detection/requirements.txt`
+- Install the required libraries: `pip install -r object_detection/requirements.txt`
     - If you want to use GPU and CUDA - go to https://pytorch.org/get-started/locally/ and pick the version that fits your CUDA version.
 
 # Usage
