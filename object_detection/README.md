@@ -20,3 +20,5 @@
     - To use:
         - `py fetch.py -s fetch-server -m yolov5 192.168.80.3`
     - If you changed the server name, then simply replace `fetch-server` with the name.
+
+- To create new object detection models, use the notebook `YOLOv5_SPOT.ipynb`, open in Gooogle Colab, and follow the directions there. 
