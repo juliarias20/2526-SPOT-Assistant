@@ -16,7 +16,7 @@
                 "text": "string",
                 "head": "string",
                 "modifiers": ["string"],
-                "role": "target|source|destination|unkown"
+                "role": "target|source|destination|unknown"
             }
         ],
         "locations":["string"]

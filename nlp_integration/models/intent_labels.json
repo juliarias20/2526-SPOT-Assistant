@@ -1,8 +1,8 @@
 {
-    "retrieve_object": "User wants the robot to fetch or bring an object to them.",
-    "locate_object": "User wants the robot to find or locate an object.",
-    "scan_environment": "User wants ther robot to look around or inspect the environment.",
-    "navigate": "User wants the robot to go to a location.",
-    "multi_step_retrieve": "User instruction contains multiple steps including retrieval.",
-    "multi_step_manipulation": "User instruction contains multiple steps including moving or placing objects."
+    "retrieve_object": "Pick up and bring a named object directly to the user. No navigation required.",
+    "locate_object": "Find where an object is. Do not pick it up or bring it.",
+    "scan_environment": "Look around or inspect the area. No specific object is targeted.",
+    "navigate": "Go to a place or destination. No object interaction of any kind.",
+    "multi_step_retrieve": "A two-part command: first travel to a location, then bring back a specific object.",
+    "multi_step_manipulation": "Pick up an object and place or reposition it somewhere else. Not delivered to user."
 }

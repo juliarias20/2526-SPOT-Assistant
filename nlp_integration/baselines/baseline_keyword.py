@@ -14,4 +14,4 @@ def keyword_baseline(text: str) -> Dict[str, str]:
         for kw in kws:
             if re.search(rf"\b{re.escape(kw)}\b", t):
                 return {"intent": intent}
-    return {"intent": "unkown"}
+    return {"intent": "unknown"}

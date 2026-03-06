@@ -9,9 +9,10 @@ from sentence_transformers import SentenceTransformer, util
 
 CONNECTORS = {"and", "then", "after", "before"}
 
-FETCH_VERBS = {"get", "bring", "grab", "hand", "fetch", "give"}
+FETCH_VERBS = {"get", "bring", "grab", "hand", "fetch", "give", "pick", "take"}
 FIND_VERBS = {"find", "locate"}
 SCAN_VERBS = {"scan", "inspect", "check", "look"}
+PLACE_VERBS = {"put", "place", "set", "drop", "lay", "leave", "move"}
 
 @dataclass
 class IntentResult:
@@ -64,7 +65,6 @@ class Phase1Interpreter:
             "and then",
             "after that",
             "then",
-            "next",
             "finally",
             "followed by",
             "so that",
@@ -154,6 +154,16 @@ class Phase1Interpreter:
             if tok.text == "," and i + 1 < len(doc):
                 left = doc[:i].text.lower().strip()
                 if left.startswith(("if ", "when ", "once ", "unless ", "while ")):
+                    split_points.append(i + 1)
+                # Also split "X, then Y" patterns
+                right_tokens = [doc[j].lower_ for j in range(i + 1, min(i + 3, len(doc)))]
+                if right_tokens and right_tokens[0] in ("then", "next", "finally"):
+                    split_points.append(i + 1)
+                
+                # comma separating two verbal phrases (action list)
+                left_has_verb = any(t.pos_ == "VERB" for t in doc[max(0, i - 4):i])
+                right_has_verb = any(t.pos_ == "VERB" for t in doc[i + 1:min(len(doc), i + 5)])
+                if left_has_verb and right_has_verb:
                     split_points.append(i + 1)
 
         # 4) "and" heuristic splits when likely joining actions (keep yours)
@@ -253,9 +263,9 @@ class Phase1Interpreter:
             from_id = f"c{a['order']}"
             to_id = f"c{b['order']}"
 
-            if a ["relation"] == "condition":
+            if b ["relation"] == "condition":
                 edges.append({"from": from_id, "to": to_id, "type": "condition_of"})
-            elif a["relation"] in ("sequence", "coordination", "temporal", "purpose"):
+            elif b["relation"] in ("sequence", "coordination", "temporal", "purpose"):
                 edges.append({"from": from_id, "to": to_id, "type": "sequence"})
             # root -> next: no edge required
 
@@ -285,6 +295,27 @@ class Phase1Interpreter:
         return verbs, objects
         
     def classify_intent(self, text: str) -> IntentResult:
+        # Verb - override for short clauses where embeddings are unreliable
+        tokens = text.lower().split()
+        if len(tokens) <= 8:
+            first_verb = None
+            doc = self.nlp(text)
+            for t in doc:
+                if t.pos_ == "VERB":
+                    first_verb = t.lemma_
+                    break
+            if first_verb in FETCH_VERBS:
+                return IntentResult("retrieve_object", 0.90, 0.10, 0.80, False, None)
+            if first_verb in FIND_VERBS:
+                return IntentResult("locate_object", 0.90, 0.10, 0.80, False, None)
+            if first_verb in SCAN_VERBS:
+                return IntentResult("scan_environment", 0.90, 0.10, 0.80, False, None)
+            if first_verb in {"go", "move", "walk", "navigate", "travel"}:
+                return IntentResult("navigate", 0.90, 0.10, 0.80, False, None)
+            if first_verb in PLACE_VERBS:
+                return IntentResult("multi_step_manipulation", 0.90, 0.10, 0.80, False, None)
+
+        # Fall through to embedding classifier for longer / ambiguous text
         text_emb = self.embedder.encode(text, convert_to_tensor=True)
         sims = {k: float(util.cos_sim(text_emb, v)) for k, v in self.intent_embs.items()}
         ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
@@ -328,8 +359,8 @@ class Phase1Interpreter:
         elif intent.label in ("retrieve_object", "multi_step_retrieve", "multi_step_manipulation"):
             n1 = add_node("navigate", max(intent.confidence - 0.1, 0.0), {})
             n2 = add_node("select_object", max(intent.confidence - 0.1, 0.0), {})
-            n3 = add_node("pick_up", max(intent.confidence - 0.15, 0.0), {})
-            n4 = add_node("deliver", max(intent.confidence - 0.15, 0.0), {})
+            n3 = add_node("pick_up", max(intent.confidence - 0.15, 0.05), {})
+            n4 = add_node("deliver", max(intent.confidence - 0.15, 0.05), {})
             edges.extend([
                 {"from": n1, "to": n2, "type": "sequence"},
                 {"from": n2, "to": n3, "type": "sequence"},
@@ -368,8 +399,12 @@ class Phase1Interpreter:
             questions.append("What specific object should I look for (e.g., pen, notebook, bottle)?")
 
         # Possessive only matters if we likely need to SEARCH / LOCATE
-        if possessive and intent.label in ("locate_object", "multi_step_retrieve"):
+        if possessive and intent.label in ("locate_object", "multi_step_retrieve", "retrieve_object"):
             questions.append("Can you describe what it looks like or where you last saw it?")
+
+        has_condition = any(c.get("relation") == "condition" for c in self.split_clauses(text))
+        if has_condition and not explicit_object:
+            questions.append("Should I search for object described before attempting to bring it?")
         
         return questions
     
