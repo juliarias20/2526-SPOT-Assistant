@@ -20,4 +20,4 @@ def rules_spacy_baseline(text: str) -> Dict[str, str]:
         return {"intent": "scan_environment"}
     if verb in ("find", "locate", "search"):
         return {"intent": "locate_object"}
-    return {"intent": "unkown"}
+    return {"intent": "unknown"}
