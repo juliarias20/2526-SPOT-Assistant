@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 from spacy.matcher import PhraseMatcher
 import spacy
 from sentence_transformers import SentenceTransformer, util
+from perception import PerceptionModule
 
 CONNECTORS = {"and", "then", "after", "before"}
 
@@ -41,6 +42,7 @@ class Phase1Interpreter:
         self.embedder = SentenceTransformer(embedding_model)
         self.ambiguity_threshold = ambiguity_threshold
         self.delta_threshold = delta_threshold
+        self.perception = PerceptionModule()
 
         with open(intent_file, "r", encoding="utf-8") as f:
             self.intent_labels: Dict[str, str] = json.load(f)
@@ -415,6 +417,11 @@ class Phase1Interpreter:
         questions = self.clarification_questions(text, intent, verbs, objects)
         clauses = self.split_clauses(text)
         phase2_plan = self.build_phase2_plan(clauses)
+        grounding = self.perception.ground_from_intent(
+            intent_label = intent.label,
+            verbs = verbs,
+            objects = objects,
+        )
 
         result = {
             "version": "1.0",
@@ -442,7 +449,8 @@ class Phase1Interpreter:
             "clarification": {
                 "required": len(questions) > 0,
                 "questions": questions
-            }
+            },
+            "grounding": grounding
         }
         return result
     
