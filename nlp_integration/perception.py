@@ -374,14 +374,32 @@ class PerceptionModule:
         # Pick the best verb to ground against
         ACTION_VERBS = {"bring", "get", "fetch", "grab", "hand", "give", "pick", "take"}
         grounding_verb = None
+        found_functional_verb = False
         for v in verbs:
             if v.lower() not in ACTION_VERBS:
                 grounding_verb = v.lower()
+                found_functional_verb = True
                 break
+
+        # Fallback: use adjective modifier on the vague object as grounding signal
+        # e.g. "something sharp" -> grounding on "sharp" -> scissors
+        if grounding_verb is None:
+            for o in objects:
+                if o.get("head") in ("something", "thing") and o.get("modifiers"):
+                    grounding_verb = o["modifiers"][0].lower()
+                    found_functional_verb = True
+                    break
+
         if grounding_verb is None:
             grounding_verb = intent_label.replace("_", " ")
 
-        return self.ground(verb = grounding_verb, candidates = candidates)
+        result = self.ground(verb = grounding_verb, candidates = candidates)
+        # Only stamp affordance_verb when we found a real functional verb (e.g. "write", "drink",
+        # "sharp"). If we fell back to the intent label, the command is bare-vague ("Bring me
+        # something") and should still block for clarification in the executor.
+        if found_functional_verb:
+            result["affordance_verb"] = grounding_verb
+        return result
     
 # ── Standalone test ───────────────────────────────────────────────────────────
 

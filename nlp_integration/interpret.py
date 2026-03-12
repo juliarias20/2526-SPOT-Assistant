@@ -168,10 +168,16 @@ class Phase1Interpreter:
                 if left_has_verb and right_has_verb:
                     split_points.append(i + 1)
 
-        # 4) "and" heuristic splits when likely joining actions (keep yours)
+        # 4) "and" heuristic splits when likely joining actions
+        # Note: also treat sentence-initial NOUN-tagged tokens whose lemma is a known
+        # motion verb (e.g. "Head") as verbs for the purpose of this check.
+        _MOTION_LEMMAS = {"head", "go", "walk", "navigate", "travel", "move", "proceed"}
         for i, tok in enumerate(doc):
             if tok.lower_ == "and":
-                left_has_verb = any(t.pos_ == "VERB" for t in doc[max(0, i - 4):i])
+                left_window = doc[max(0, i - 4):i]
+                left_has_verb = any(t.pos_ == "VERB" for t in left_window) or (
+                    i > 0 and doc[0].lemma_.lower() in _MOTION_LEMMAS
+                )
                 right_has_verb = any(t.pos_ == "VERB" for t in doc[i + 1:min(len(doc), i + 5)])
                 if left_has_verb and right_has_verb:
                     split_points.append(i)
@@ -278,15 +284,34 @@ class Phase1Interpreter:
         verbs: List[str] = []
         objects: List[Dict] = []
 
+        # Verbs that spaCy sometimes mistaggs as NOUN at sentence start
+        MOTION_VERB_LEMMAS = {"head", "go", "walk", "navigate", "travel", "move", "proceed"}
+
         # Collect Verbs (lemmatized)
         for t in doc:
             if t.pos_ == "VERB":
                 verbs.append(t.lemma_)
+            # Also capture sentence-initial tokens whose lemma is a known motion verb
+            # even if spaCy tagged them as NOUN (e.g. "Head" in "Head to the kitchen")
+            elif t.i == 0 and t.lemma_.lower() in MOTION_VERB_LEMMAS:
+                verbs.append(t.lemma_.lower())
 
         # Collect object-like noun chunks as candidates
         for chunk in doc.noun_chunks:
             head = chunk.root.lemma_
+            # Skip noun chunks that are actually sentence-initial motion verbs
+            if chunk.start == 0 and head.lower() in MOTION_VERB_LEMMAS:
+                continue
+            # Modifiers within the chunk span (e.g. "red cup" -> ["red"])
             modifiers = [t.text.lower() for t in chunk if t.dep_ in ("amod", "compound", "nummod")]
+            # Also catch postpositive adjectives outside the chunk span
+            # e.g. "something sharp" -- spaCy chunk = "something", "sharp" is amod on root
+            modifiers += [
+                t.text.lower() for t in doc
+                if t.head == chunk.root
+                and t.dep_ == "amod"
+                and t not in chunk
+            ]
             objects.append({
                 "text": chunk.text,
                 "head": head,
@@ -297,6 +322,13 @@ class Phase1Interpreter:
         return verbs, objects
         
     def classify_intent(self, text: str) -> IntentResult:
+        # Pre-check: sentence-initial motion verbs that spaCy may tag as NOUN
+        # (e.g. "Head to the kitchen..."). These are unambiguous regardless of length.
+        NAV_FIRST_TOKENS = {"go", "head", "walk", "navigate", "travel", "move", "proceed"}
+        first_token = text.strip().split()[0].lower().rstrip(".,!?") if text.strip() else ""
+        if first_token in NAV_FIRST_TOKENS:
+            return IntentResult("navigate", 0.90, 0.10, 0.80, False, None)
+
         # Verb - override for short clauses where embeddings are unreliable
         tokens = text.lower().split()
         if len(tokens) <= 8:
@@ -312,7 +344,7 @@ class Phase1Interpreter:
                 return IntentResult("locate_object", 0.90, 0.10, 0.80, False, None)
             if first_verb in SCAN_VERBS:
                 return IntentResult("scan_environment", 0.90, 0.10, 0.80, False, None)
-            if first_verb in {"go", "move", "walk", "navigate", "travel"}:
+            if first_verb in {"go", "move", "walk", "navigate", "travel", "head"}:
                 return IntentResult("navigate", 0.90, 0.10, 0.80, False, None)
             if first_verb in PLACE_VERBS:
                 return IntentResult("multi_step_manipulation", 0.90, 0.10, 0.80, False, None)
