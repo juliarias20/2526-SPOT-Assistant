@@ -83,24 +83,56 @@
 - ex047 "Move the backpack" predicts navigate → "move" conflicts with navigate verb set; minor edge case
 - Phase III failures g004 (read→pen), g014 (type→phone), g015 (open→phone) are all cases of bare verb ambiguity without object context — linguistically underspecified inputs, not model errors
 
+---
+
+## Week of 2026-03-12
+
+### What I built
+- evaluate_phase4.py: 20-trial dry-run eval (execution_gold.jsonl), reports task completion, plan accuracy, object/waypoint extraction, per-category breakdown, trial detail log
+- execution_gold.jsonl: 20 annotated trials across 7 categories (navigate, retrieve_object, multi_step_retrieve, locate_object, scan_environment, vague_retrieve, edge_case)
+- execution_trials.jsonl: per-run trial log output
+
+### What worked (after fixes)
+- All 7 categories pass at 100% after three targeted bug fixes
+- Vague affordance grounding (write→pen, drink→bottle, sharp→scissors) fully wired end-to-end
+- Bare edge case ("Bring me something") correctly fails and requests clarification
+- Sentence-initial motion verbs ("Head to...") correctly parsed as navigate + multi-step retrieve
+
+### What failed / edge cases (resolved)
+- `vague_retrieve` 0/3: `ground_from_intent` was not stamping `affordance_verb` key → executor's `has_affordance_verb` check always False → hard block. Fix: stamp `result["affordance_verb"] = grounding_verb` only when a real functional verb or adjective modifier is found (not the intent-label fallback)
+- p4020 "Bring me something" incorrectly succeeding: bare vague with no qualifier was resolving via intent-label fallback → added `found_functional_verb` flag; bare commands without a real grounding signal still block for clarification
+- p4002 "Head to the kitchen and grab me a cup": two bugs — (1) "Head" mistagged as NOUN by spaCy → sentence-initial NAV_FIRST_TOKENS pre-check added to `classify_intent` before token-length gate; (2) "and" heuristic in `split_clauses` used `t.pos_ == "VERB"` for left_has_verb check, missed NOUN-tagged "Head" → added doc[0].lemma_ in `_MOTION_LEMMAS` fallback
+- p4011 "Hand me something sharp": "sharp" is a postpositive adjective outside the spaCy noun chunk span → not captured by in-chunk modifier scan. Fix: added out-of-span `amod` scan (`t.head == chunk.root and t.dep_ == "amod" and t not in chunk`) to `extract_verbs_objects`; grounding then uses "sharp" as affordance signal → scissors
+
+### Decisions made (and why)
+- `affordance_verb` key as executor signal: cleaner than adding a separate `grounding_resolved` bool — the key presence carries both the signal and the verb used, useful for logging
+- `found_functional_verb` flag vs. checking `grounding_verb != intent_label.replace(...)`: flag is more explicit and doesn't break if intent label wording changes
+- Postpositive amod scan scoped to `t.head == chunk.root`: avoids capturing adjectives from other chunks in the same sentence
+- Sentence-initial NAV_FIRST_TOKENS check runs before the ≤8-token gate: motion verb commands are unambiguous regardless of length; checking first token is O(1) and safe
+
 ### Final Results — All Phases
 
-| Phase | Metric                  | Score  | Threshold          |
-|-------|-------------------------|--------|--------------------|
-| I     | Intent Accuracy         | 0.740  | beats baselines ✅ |
-| I     | Keyword Baseline        | 0.680  | —                  |
-| I     | spaCy Baseline          | 0.680  | —                  |
-| I     | Clarification Precision | 1.000  | —                  |
-| I     | Clarification Recall    | 0.700  | —                  |
-| I     | Clarification F1        | 0.824  | —                  |
-| II    | Clause Count Accuracy   | 100%   | —                  |
-| II    | Per-Clause Intent Acc.  | 96.4%  | —                  |
-| II    | Step-Sequence F1        | 0.863  | —                  |
-| II    | Edge-Type Accuracy      | 100%   | —                  |
-| III   | Top-1 Grounding Acc.    | 85.0%  | ≥ 70% ✅          |
-| III   | Top-3 Grounding Acc.    | 90.0%  | —                  |
-| III   | Mean Reciprocal Rank    | 0.889  | —                  |
-| III   | Mean Affordance Score   | 0.547  | —                  |
+| Phase | Metric                  | Score   | Threshold           |
+|-------|-------------------------|---------|---------------------|
+| I     | Intent Accuracy         | 0.740   | beats baselines ✅  |
+| I     | Keyword Baseline        | 0.680   | —                   |
+| I     | spaCy Baseline          | 0.680   | —                   |
+| I     | Clarification Precision | 1.000   | —                   |
+| I     | Clarification Recall    | 0.700   | —                   |
+| I     | Clarification F1        | 0.824   | —                   |
+| II    | Clause Count Accuracy   | 100%    | —                   |
+| II    | Per-Clause Intent Acc.  | 96.4%   | —                   |
+| II    | Step-Sequence F1        | 0.863   | —                   |
+| II    | Edge-Type Accuracy      | 100%    | —                   |
+| III   | Top-1 Grounding Acc.    | 85.0%   | ≥ 70% ✅           |
+| III   | Top-3 Grounding Acc.    | 90.0%   | —                   |
+| III   | Mean Reciprocal Rank    | 0.889   | —                   |
+| III   | Mean Affordance Score   | 0.547   | —                   |
+| IV    | Task Completion Rate    | 95.0%   | ≥ 65–75% ✅        |
+| IV    | Outcome Accuracy        | 100.0%  | —                   |
+| IV    | Plan Accuracy           | 100.0%  | —                   |
+| IV    | Object Extraction Acc.  | 100.0%  | —                   |
+| IV    | Waypoint Extraction Acc.| 100.0%  | —                   |
 
 ### Classifier progression (story for presentation)
 
@@ -124,12 +156,18 @@
 - spot_skills.py (6 skill primitives: navigate, scan, locate, pick_up, deliver, release)
 - executor.py (task graph walker, retry logic, recovery clarifications)
 - interpret.py wired to perception.py via ground_from_intent()
+- evaluate_phase4.py (5 metrics: task completion, outcome accuracy, plan accuracy, object/waypoint extraction)
+- execution_gold.jsonl (20 trials, 7 categories)
+- Phase IV evaluation locked with final numbers (run_20260312_092012)
+- affordance_verb wiring fix (perception.py)
+- found_functional_verb flag for bare-vague blocking (perception.py)
+- NAV_FIRST_TOKENS pre-check in classify_intent (interpret.py)
+- Postpositive amod scan in extract_verbs_objects (interpret.py)
+- "and" heuristic motion-verb fallback in split_clauses (interpret.py)
 
 ### Next steps
-- [ ] Run executor.py dry-run: "Go to the desk and bring the notebook", "Bring me something to write with", "Find my backpack"
 - [ ] Record GraphNav map on SPOT, note waypoint IDs, name to match location nouns (desk, table, kitchen)
 - [ ] Run live SPOT trials (target: 15–20 trials across 4 command categories)
-- [ ] Build evaluate_phase4.py: log execution_trials.jsonl, report task completion rate + recovery rate
 - [ ] Fix double embedder load: pass shared SentenceTransformer instance from Phase1Interpreter to PerceptionModule
 - [ ] Phase V: end-to-end integration + continuous perception loop
 - [ ] Create system architecture diagram (NLP → clause splitter → task graph → grounding → skill mapping → SPOT)
