@@ -77,6 +77,7 @@ PRONOUNS: frozenset = frozenset({
     "it", "its", "itself",
     "we", "us", "our", "ours", "ourselves",
     "they", "them", "their", "theirs", "themselves",
+    "what", "which", "who", "whom", "whose", "where", "when", "how", "why",
 })
 
 # ── Result types ──────────────────────────────────────────────────────────────
@@ -280,12 +281,22 @@ class TaskExecutor:
             o["head"] in ("something", "thing")
             for o in parsed.get("entities", {}).get("objects", [])
         )
-        if has_vague and (grounding is None or grounding.get("best_match") is None):
+        # affordance_verb is set by the grounding layer when a functional verb is found
+        has_affordance_verb = bool(
+            grounding and grounding.get("affordance_verb")
+        )
+        grounding_resolved = (
+            grounding is not None
+            and grounding.get("best_match") is not None
+            and (has_affordance_verb or not has_vague)
+        )
+        if has_vague and not grounding_resolved:
             return ExecutionResult(
-                success = False,
-                command = command,
+                success               = False,
+                command               = command,
                 clarifications_needed = clarifications,
-                error = "Cannont execute: object is unspecfied and grounding retrned no match."
+                error = "Cannot execute: object is unspecified and no affordance verb found. "
+                        "Please describe what you need the object for (e.g. 'something to write with').",
             )
         
         # 3. Build execution plan from Phase II task graph
