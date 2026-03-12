@@ -125,8 +125,8 @@ def process_thread(args, request_queue, response_queue):
         for det in detections:
             if len(det.boxes.cls) > 0:
                 boxes.append(det.boxes.xyxy[0])
-                classes.append(det.boxes.cls.item())
-                scores.append(det.boxes.conf.item())
+                classes.append(det.boxes.cls[0])
+                scores.append(det.boxes.conf[0])
         
         boxes = np.array(boxes)
         classes = np.array(classes)
@@ -202,6 +202,8 @@ def process_thread(args, request_queue, response_queue):
             cv2.imwrite(debug_image_filename, image)
             print('Wrote debug image output to: "' + debug_image_filename + '"')
 
+        print(out_proto)
+        print(out_proto.header)
         response_queue.put(out_proto)
 
 
@@ -232,7 +234,7 @@ def register_with_robot(options):
     ip = bosdyn.client.common.get_self_ip(options.hostname)
     print('Detected IP address as: ' + ip)
 
-    sdk = bosdyn.client.create_standard_sdk("tensorflow_server")
+    sdk = bosdyn.client.create_standard_sdk("objectdetection_server")
 
     robot = sdk.create_robot(options.hostname)
 
