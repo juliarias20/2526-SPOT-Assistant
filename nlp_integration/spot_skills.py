@@ -60,6 +60,25 @@ SPOT_IP: str = os.environ.get("SPOT_IP", "192.168.80.3")
 SPOT_USER: str = os.environ.get("SPOT_USER", "user")
 SPOT_PASS: str = os.environ.get("SPOT_PASS", "password")
 
+# GraphNav map path (directory containing graph + snapshot subdirs from record_map.py)
+MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
+
+# ── Waypoint name -> GraphNav UUID lookup ─────────────────────────────────────
+# Run record_map.py once to generate these UUIDs, then fill them in here.
+# The executor passes human-readable names (e.g. "desk"); this table resolves them
+# to stable GraphNav IDs. Add one entry per named location in your trial space.
+#
+# Example (replace UUIDs with output from record_map.py):
+#   "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+#   "table":   "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+#   "kitchen": "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"
+WAYPOINT_MAP: dict = {
+    # TODO: fill in after running record_map.py
+    # "desk":    "<uuid-from-record_map>",
+    # "table":   "<uuid-from-record_map>",
+    # "kitchen": "<uuid-from-record_map>",
+}
+
 # Navigation
 NAVIGATE_TIMEOUT_SEC: float = 30.0
 NAVIGATE_POLL_SEC: float = 0.5
@@ -114,6 +133,7 @@ class SpotRobot:
         self.graph_nav_client   = None
         self.manip_client       = None
         self._connected         = False
+        self._map_uploaded      = False  # True once GraphNav graph is uploaded
 
     def connect(self) -> bool:
         if not SPOT_SDK_AVAILABLE:
@@ -144,11 +164,83 @@ class SpotRobot:
             self.command_client.robot_command(cmd)
             time.sleep(1.5)
 
+            # Upload GraphNav map
+            self._upload_map(MAP_PATH)
+
             self._connected = True
             print(f"[spot] Connected and standing: {SPOT_IP}")
             return True
         except Exception as e:
             print(f"[spot] Connection failed: {e}")
+            return False
+
+    def _upload_map(self, map_dir: str) -> bool:
+        """
+        Upload a pre-recorded GraphNav map to SPOT and set initial localization.
+        Called automatically by connect(). Safe to call multiple times -- skips
+        if map is already uploaded.
+
+        map_dir: path to directory produced by record_map.py, containing:
+            graph                   -- serialized Graph proto
+            waypoint_snapshots/     -- one file per waypoint snapshot ID
+            edge_snapshots/         -- one file per edge snapshot ID
+        """
+        if self._map_uploaded:
+            return True
+
+        map_path = Path(map_dir)
+        graph_file = map_path / "graph"
+
+        if not graph_file.exists():
+            print(f"[spot] Map not found at '{graph_file}' -- navigation will use waypoint IDs as-is.")
+            return False
+
+        try:
+            from bosdyn.api.graph_nav import map_pb2 as graph_nav_map_pb2
+            from pathlib import Path as _Path
+
+            # Load and upload graph
+            with open(graph_file, "rb") as f:
+                graph = graph_nav_map_pb2.Graph()
+                graph.ParseFromString(f.read())
+            self.graph_nav_client.upload_graph(graph=graph)
+            print(f"[spot] Graph uploaded: {len(graph.waypoints)} waypoints, {len(graph.edges)} edges")
+
+            # Upload waypoint snapshots
+            snap_dir = map_path / "waypoint_snapshots"
+            if snap_dir.exists():
+                for snap_file in snap_dir.iterdir():
+                    with open(snap_file, "rb") as f:
+                        snapshot = graph_nav_map_pb2.WaypointSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_waypoint_snapshot(snapshot)
+
+            # Upload edge snapshots
+            edge_dir = map_path / "edge_snapshots"
+            if edge_dir.exists():
+                for snap_file in edge_dir.iterdir():
+                    with open(snap_file, "rb") as f:
+                        snapshot = graph_nav_map_pb2.EdgeSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_edge_snapshot(snapshot)
+
+            # Set initial localization to nearest fiducial
+            self.graph_nav_client.set_localization(
+                graph_nav_pb2.SetLocalizationRequest(
+                    initial_guess=graph_nav_pb2.Localization(),
+                    ko_tform_body=graph_nav_pb2.Localization(),
+                    max_distance=5.0,
+                    max_yaw=1.57,
+                    fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NEAREST,
+                )
+            )
+
+            self._map_uploaded = True
+            print("[spot] Map uploaded and localization set.")
+            return True
+
+        except Exception as e:
+            print(f"[spot] Map upload failed: {e}")
             return False
 
     def disconnect(self):
@@ -194,11 +286,17 @@ def navigate(
     try:
         nav_client = robot.graph_nav_client
 
-        # Upload graph if not already uploaded (assumes map is pre-recorded)
-        # In practice, load the map once at startup via nav_client.upload_graph(...)
+        # Resolve human-readable name to GraphNav UUID
+        resolved_id = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
+        if resolved_id == waypoint_id and waypoint_id.lower() in [k.lower() for k in WAYPOINT_MAP]:
+            resolved_id = WAYPOINT_MAP[waypoint_id.lower()]
+        if resolved_id not in WAYPOINT_MAP.values() and waypoint_id not in WAYPOINT_MAP.values():
+            # Name not in map — warn but attempt anyway (UUID passed directly)
+            print(f"[spot] Warning: '{waypoint_id}' not in WAYPOINT_MAP. "
+                  f"Attempting navigation with raw ID.")
 
         cmd_id = nav_client.navigate_to(
-            waypoint_id,
+            resolved_id,
             travel_params = nav_pb2.TravelParams(max_distance = 0.5)
         )
 

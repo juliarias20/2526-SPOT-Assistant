@@ -120,21 +120,29 @@ class PerceptionModule:
         embedding_model: str = "all-MiniLM-L6-v2",
         detection_conf: float = DETECTION_CONF_THRESHOLD,
         affordance_weight: float = 0.6,
-        detection_weight: float = 0.4,    
+        detection_weight: float = 0.4,
+        embedder=None,
     ):
         """
         Args:
-            embedding_model:    SentenceTransformer model name (reuse from interpret.py)
+            embedding_model:    SentenceTransformer model name. Ignored if embedder
+                                is provided.
             detection_conf:     Minimum YOLO confidence to keep a detection.
             affordance_weight:  Weight of semantic similarity in combined score.
             detection_weight:   Weight of YOLO detection confidence in combined score.
+            embedder:           Optional pre-loaded SentenceTransformer instance to
+                                share with Phase1Interpreter. Avoids loading the model
+                                twice when both modules are used together.
         """
         self.detection_conf     = detection_conf
         self.affordance_weight  = affordance_weight
         self.detection_weight   = detection_weight
 
-        # Share embedder with interpret.py if possible; otherwise load own copy
-        self.embedder = SentenceTransformer(embedding_model)
+        # Use shared embedder if provided, otherwise load own copy
+        if embedder is not None:
+            self.embedder = embedder
+        else:
+            self.embedder = SentenceTransformer(embedding_model)
 
         # YOLOv8
         self._yolo: Optional[object] = None

@@ -42,7 +42,7 @@ class Phase1Interpreter:
         self.embedder = SentenceTransformer(embedding_model)
         self.ambiguity_threshold = ambiguity_threshold
         self.delta_threshold = delta_threshold
-        self.perception = PerceptionModule()
+        self.perception = PerceptionModule(embedder=self.embedder)
 
         with open(intent_file, "r", encoding="utf-8") as f:
             self.intent_labels: Dict[str, str] = json.load(f)
