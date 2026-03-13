@@ -54,7 +54,7 @@ LIVE_TRIALS = [
     {
         "id": "L01", "category": "retrieve_object",
         "command": "Bring me the pen",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "pen", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Pen visible from start position.",
@@ -62,7 +62,7 @@ LIVE_TRIALS = [
     {
         "id": "L02", "category": "retrieve_object",
         "command": "Hand me the scissors",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "scissors", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Scissors visible from start position.",
@@ -70,7 +70,7 @@ LIVE_TRIALS = [
     {
         "id": "L03", "category": "retrieve_object",
         "command": "Get me the laptop",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "laptop", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Laptop open/flat on surface, visible from start position.",
@@ -78,7 +78,7 @@ LIVE_TRIALS = [
     {
         "id": "L04", "category": "retrieve_object",
         "command": "Give me the notebook",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "notebook", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Notebook flat on surface, visible from start position.",
@@ -86,7 +86,7 @@ LIVE_TRIALS = [
     {
         "id": "L05", "category": "retrieve_object",
         "command": "Bring me the bottle",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "bottle", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Bottle upright, visible from start position.",
@@ -95,7 +95,7 @@ LIVE_TRIALS = [
     {
         "id": "L06", "category": "multi_step_retrieve",
         "command": "Go to the desk and bring me the notebook",
-        "expected_plan": ["navigate", "locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "notebook", "expected_waypoint": "desk",
         "expected_success": True,
         "setup_note": "Notebook staged at desk waypoint.",
@@ -103,7 +103,7 @@ LIVE_TRIALS = [
     {
         "id": "L07", "category": "multi_step_retrieve",
         "command": "Head to the table and grab me a cup",
-        "expected_plan": ["navigate", "locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "cup", "expected_waypoint": "table",
         "expected_success": True,
         "setup_note": "Cup staged at table waypoint.",
@@ -111,7 +111,7 @@ LIVE_TRIALS = [
     {
         "id": "L08", "category": "multi_step_retrieve",
         "command": "Go to the table and fetch my charger",
-        "expected_plan": ["navigate", "locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "charger", "expected_waypoint": "table",
         "expected_success": True,
         "setup_note": "Charger staged at table waypoint alongside cup.",
@@ -119,7 +119,7 @@ LIVE_TRIALS = [
     {
         "id": "L09", "category": "multi_step_retrieve",
         "command": "Go to the desk and bring me the stapler",
-        "expected_plan": ["navigate", "locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "stapler", "expected_waypoint": "desk",
         "expected_success": True,
         "setup_note": "Stapler staged at desk waypoint.",
@@ -128,7 +128,7 @@ LIVE_TRIALS = [
     {
         "id": "L10", "category": "vague_retrieve",
         "command": "Bring me something to write with",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "pen", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Pen visible. Affordance: write → pen.",
@@ -136,7 +136,7 @@ LIVE_TRIALS = [
     {
         "id": "L11", "category": "vague_retrieve",
         "command": "Get me something to drink",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "bottle", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Bottle visible. Affordance: drink → bottle.",
@@ -144,7 +144,7 @@ LIVE_TRIALS = [
     {
         "id": "L12", "category": "vague_retrieve",
         "command": "Hand me something sharp",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "scissors", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Scissors visible. Affordance: sharp → scissors.",
@@ -152,7 +152,7 @@ LIVE_TRIALS = [
     {
         "id": "L13", "category": "vague_retrieve",
         "command": "Bring me something to carry my things in",
-        "expected_plan": ["locate", "pick_up", "deliver", "release"],
+        "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "backpack", "expected_waypoint": None,
         "expected_success": True,
         "setup_note": "Backpack visible. Affordance: carry → backpack. Harder phrase.",
