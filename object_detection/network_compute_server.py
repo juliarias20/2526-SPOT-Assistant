@@ -63,6 +63,7 @@ def process_thread(args, request_queue, response_queue):
             for model_name in models:
                 out_proto.models.data.append(
                     network_compute_bridge_pb2.ModelData(model_name=model_name))
+            out_proto.status = network_compute_bridge_pb2.NetworkComputeStatus.NETWORK_COMPUTE_STATUS_SUCCESS
             response_queue.put(out_proto)
             continue
         else:
@@ -202,8 +203,7 @@ def process_thread(args, request_queue, response_queue):
             cv2.imwrite(debug_image_filename, image)
             print('Wrote debug image output to: "' + debug_image_filename + '"')
 
-        print(out_proto)
-        print(out_proto.header)
+        out_proto.status = network_compute_bridge_pb2.NetworkComputeStatus.NETWORK_COMPUTE_STATUS_SUCCESS
         response_queue.put(out_proto)
 
 

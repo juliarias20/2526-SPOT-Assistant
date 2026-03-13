@@ -16,10 +16,12 @@
     - To set up the server:
         - `py network_compute_server.py -m models/x_block_model/x_block_model.pt 192.168.80.3`
     - The default name of the server is currently `fetch-server` but can be changed with the command above and the option `-n` or `--name`.
+    - The model can be changed by changing the path after the `-m`. 
 
 - `fetch.py` is currently the test code to use the model - basically ripped from the fetch tutorial. If this can fully use the model then the this code can be used as a blueprint for creating code utilizing models from servers.
     - To use:
         - `py fetch.py -s fetch-server -m x_block_model 192.168.80.3`
     - If you changed the server name, then simply replace `fetch-server` with the name.
+    - The file currently has the name of the object detection hardcoded in - if you want to use a different model that detects different objects, change the appropriate name (currently `x-block`) at line 210.
 
 - To create new object detection models, use the notebook `YOLOv5_SPOT.ipynb`, open in Gooogle Colab, and follow the directions there. 

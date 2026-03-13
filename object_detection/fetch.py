@@ -169,8 +169,8 @@ def main(argv):
                         required=True)
     parser.add_argument('-p', '--person-model',
                         help='Person detection model name running on the external server.')
-    parser.add_argument('-c', '--confidence-x_block',
-                        help='Minimum confidence to return an object for the x_block (0.0 to 1.0)',
+    parser.add_argument('-c', '--confidence-object',
+                        help='Minimum confidence to return an object for the object (0.0 to 1.0)',
                         default=0.5, type=float)
     parser.add_argument('-e', '--confidence-person',
                         help='Minimum confidence for person detection (0.0 to 1.0)', default=0.6,
@@ -205,25 +205,25 @@ def main(argv):
             holding_toy = False
             while not holding_toy:
                 # Capture an image and run ML on it.
-                x_block, image, vision_tform_x_block = get_obj_and_img(
+                object, image, vision_tform_object = get_obj_and_img(
                     network_compute_client, options.ml_service, options.model,
-                    options.confidence_x_block, kImageSources, 'x-block')
+                    options.confidence_object, kImageSources, 'x-block')
 
-                if x_block is None:
+                if object is None:
                     # Didn't find anything, keep searching.
                     continue
 
                 # If we have already dropped the toy off, make sure it has moved a sufficient amount before
                 # picking it up again
                 if vision_tform_hand_at_drop is not None and pose_dist(
-                        vision_tform_hand_at_drop, vision_tform_x_block) < 0.5:
-                    print('Found x_block, but it hasn\'t moved.  Waiting...')
+                        vision_tform_hand_at_drop, vision_tform_object) < 0.5:
+                    print('Found object, but it hasn\'t moved.  Waiting...')
                     time.sleep(1)
                     continue
 
-                print('Found x_block...')
+                print('Found object...')
 
-                # Got a x_block.  Request pick up.
+                # Got a object.  Request pick up.
 
                 # Stow the arm in case it is deployed
                 stow_cmd = RobotCommandBuilder.arm_stow_command()
@@ -231,7 +231,7 @@ def main(argv):
 
                 # # Walk to the object.
                 # walk_rt_vision, heading_rt_vision = compute_stand_location_and_yaw(
-                #     vision_tform_x_block, robot_state_client, distance_margin=1.0)
+                #     vision_tform_object, robot_state_client, distance_margin=1.0)
 
                 # se2_pose = geometry_pb2.SE2Pose(
                 #     position=geometry_pb2.Vec2(x=walk_rt_vision[0], y=walk_rt_vision[1]),
@@ -247,7 +247,7 @@ def main(argv):
                 # block_for_trajectory_cmd(command_client, cmd_id, timeout_sec=5)
 
                 # The ML result is a bounding box.  Find the center.
-                (center_px_x, center_px_y) = find_center_px(x_block.image_properties.coordinates)
+                (center_px_x, center_px_y) = find_center_px(object.image_properties.coordinates)
 
                 # Request Pick Up on that pixel.
                 pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
@@ -423,7 +423,7 @@ def main(argv):
             command = RobotCommandBuilder.build_synchro_command(gripper_command)
             cmd_id = command_client.robot_command(command)
 
-            # Wait for the x_block to fall out
+            # Wait for the object to fall out
             time.sleep(1.5)
 
             # Stow the arm.
