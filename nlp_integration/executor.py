@@ -55,8 +55,8 @@ INTENT_SKILL_MAP: Dict[str, List[str]] = {
     "navigate":               ["navigate"],
     "scan_environment":       ["scan"],
     "locate_object":          ["locate"],
-    "retrieve_object":        ["locate", "pick_up", "deliver", "release"],
-    "multi_step_retrieve":    ["navigate", "locate", "pick_up", "deliver", "release"],
+    "retrieve_object":        ["locate", "pick_up", "navigate_return", "deliver", "release"],
+    "multi_step_retrieve":    ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
     "multi_step_manipulation":["locate", "pick_up", "navigate", "deliver", "release"],
 }
 
@@ -210,6 +210,9 @@ class TaskExecutor:
         Returns a StepLog recording the outcome.
         """
         skill_fn = SKILL_REGISTRY.get(skill_name)
+        # navigate_return is a virtual skill — resolved at dispatch time to navigate("user")
+        if skill_fn is None and skill_name == "navigate_return":
+            skill_fn = SKILL_REGISTRY.get("navigate")
         if skill_fn is None:
             return StepLog(step_id, skill_name, False,
                            f"Skill '{skill_name}' not found in registry.")
@@ -225,6 +228,14 @@ class TaskExecutor:
                 if skill_name == "navigate":
                     waypoint = params.get("waypoint_id", "unknown_waypoint")
                     last_result = skill_fn(self.robot, waypoint)
+                elif skill_name == "navigate_return":
+                    # Always navigate back to the 'user' waypoint after retrieval.
+                    # 'user' must be stamped during map recording (record_map.py).
+                    # In mock mode, succeeds silently so dry-run eval is unaffected.
+                    nav_fn = SKILL_REGISTRY["navigate"]
+                    if not self.robot.connected:
+                        print("[mock] navigate_return -> waypoint = 'user'")
+                    last_result = nav_fn(self.robot, "user")
                 elif skill_name in ("locate", "pick_up"):
                     label = params.get("object_label", "unknown_object")
                     bbox = params.get("bbox")
