@@ -24,4 +24,5 @@
     - If you changed the server name, then simply replace `fetch-server` with the name.
     - The file currently has the name of the object detection hardcoded in - if you want to use a different model that detects different objects, change the appropriate name (currently `x-block`) at line 210.
 
-- To create new object detection models, use the notebook `YOLOv5_SPOT.ipynb`, open in Gooogle Colab, and follow the directions there. 
+- To create new object detection models, use the notebook `YOLO_SPOT.ipynb`, open in Gooogle Colab, and follow the directions there. 
+    - Once you have downloaded the new model, make sure to create a directory under `/models` with the desired name for the model and put the `.pt` file there.
