@@ -4,3 +4,5 @@ __pycache__/
 .env
 .venv/
 spot-sdk/
+
+object_detection/*output.jpg

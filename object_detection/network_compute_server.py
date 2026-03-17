@@ -123,10 +123,10 @@ def process_thread(args, request_queue, response_queue):
         scores = []
         
         for det in detections:
-            if len(det.boxes.cls) > 0:
-                boxes.append(det.boxes.xyxy[0])
-                classes.append(det.boxes.cls[0])
-                scores.append(det.boxes.conf[0])
+            for i in range(len(det.boxes.cls)):
+                boxes.append(det.boxes.xyxy[i])
+                classes.append(det.boxes.cls[i])
+                scores.append(det.boxes.conf[i])
         
         boxes = np.array(boxes)
         classes = np.array(classes)
@@ -137,12 +137,6 @@ def process_thread(args, request_queue, response_queue):
                 continue
 
             box = tuple(boxes[i].tolist())
-
-            # Boxes come in with normalized coordinates.  Convert to pixel values.
-            # box = [
-            #     box[0] * image_width, box[1] * image_height, box[2] * image_width,
-            #     box[3] * image_height
-            # ]
 
             score = scores[i]
 

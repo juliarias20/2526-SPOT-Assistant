@@ -9,7 +9,6 @@ import bosdyn.client
 import bosdyn.client.util
 from bosdyn.client import frame_helpers
 from bosdyn.api import network_compute_bridge_pb2, image_pb2
-from bosdyn.client.image import ImageClient
 from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
 def get_obj_and_img(network_compute_client, server, model, confidence, source):
@@ -119,7 +118,7 @@ def main(argv):
     parser.add_argument('--image-source', help='Get image from source(s)',
                         default='frontleft_fisheye_image')
     parser.add_argument('-s', '--ml-service',
-                        help='Service name of externam machine learning server.', required=True)
+                        help='Service name of external machine learning server.', required=True)
     parser.add_argument('-m', '--model', help='Model name running on the external server.',
                         required=True)
     parser.add_argument('-c', '--confidence-object',
@@ -141,7 +140,6 @@ def main(argv):
     robot.time_sync.wait_for_sync()
     
     network_compute_client = robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
-    image_client = robot.ensure_client(ImageClient.default_service_name)
     
     # Main loop
     while True:
