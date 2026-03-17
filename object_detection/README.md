@@ -24,5 +24,12 @@
     - If you changed the server name, then simply replace `fetch-server` with the name.
     - The file currently has the name of the object detection hardcoded in - if you want to use a different model that detects different objects, change the appropriate name (currently `x-block`) at line 210.
 
+- `live_cam_detection.py` lets you see through one of the cameras while in control of the robot.
+    - To use:
+        - `py live_cam_detection.py --image-source frontleft_fisheye_image -s fetch-server -m x_block_model 192.168.80.3`
+    - You can change the camera to another by changing the `frontleft_fisheye_image` from above.
+    - The default name of the server is currently `fetch-server` but can be changed with the command above and the option `-n` or `--name`.
+    - The model can be changed by changing the path after the `-m`.
+
 - To create new object detection models, use the notebook `YOLO_SPOT.ipynb`, open in Gooogle Colab, and follow the directions there. 
     - Once you have downloaded the new model, make sure to create a directory under `/models` with the desired name for the model and put the `.pt` file there.

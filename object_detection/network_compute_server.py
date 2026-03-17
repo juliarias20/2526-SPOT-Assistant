@@ -40,7 +40,6 @@ class UltralyticsObjectDetectionModel:
         detections = self.detect_fn(image)
         return detections
 
-
 def process_thread(args, request_queue, response_queue):
     # Load the model(s)
     models = {}
