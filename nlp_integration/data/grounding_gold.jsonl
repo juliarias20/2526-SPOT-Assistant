@@ -1,0 +1,20 @@
+{"id": "g001", "verb": "write", "correct_object": "pen", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g002", "verb": "drink", "correct_object": "bottle", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g003", "verb": "cut", "correct_object": "scissors", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g004", "verb": "read", "correct_object": "notebook", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g005", "verb": "call", "correct_object": "phone", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g006", "verb": "staple", "correct_object": "stapler", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g007", "verb": "write", "correct_object": "pen", "scene": ["pen", "marker", "notebook", "cup", "laptop", "backpack"]}
+{"id": "g008", "verb": "drink", "correct_object": "cup", "scene": ["pen", "marker", "cup", "laptop", "backpack", "charger"]}
+{"id": "g009", "verb": "charge", "correct_object": "charger", "scene": ["pen", "cup", "bottle", "charger", "notebook", "stapler"]}
+{"id": "g010", "verb": "carry", "correct_object": "backpack", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "backpack"]}
+{"id": "g011", "verb": "clean", "correct_object": "cloth", "scene": ["pen", "cup", "cloth", "scissors", "notebook", "stapler", "bottle"]}
+{"id": "g012", "verb": "write", "correct_object": "marker", "scene": ["marker", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g013", "verb": "drink", "correct_object": "cup", "scene": ["pen", "cup", "scissors", "notebook", "stapler", "phone", "backpack"]}
+{"id": "g014", "verb": "type", "correct_object": "laptop", "scene": ["pen", "cup", "bottle", "scissors", "laptop", "stapler", "phone"]}
+{"id": "g015", "verb": "open", "correct_object": "scissors", "scene": ["pen", "cup", "bottle", "scissors", "notebook", "stapler", "phone"]}
+{"id": "g016", "verb": "sit", "correct_object": "chair", "scene": ["chair", "cup", "bottle", "scissors", "notebook", "table", "phone"]}
+{"id": "g017", "verb": "write", "correct_object": "pen", "scene": ["pen", "bottle", "backpack", "charger", "stapler"]}
+{"id": "g018", "verb": "charge", "correct_object": "charger", "scene": ["pen", "cup", "backpack", "charger", "notebook"]}
+{"id": "g019", "verb": "drink", "correct_object": "bottle", "scene": ["pen", "bottle", "backpack", "scissors", "notebook"]}
+{"id": "g020", "verb": "carry", "correct_object": "backpack", "scene": ["pen", "cup", "bottle", "backpack", "stapler"]}

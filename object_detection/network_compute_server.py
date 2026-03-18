@@ -40,7 +40,6 @@ class UltralyticsObjectDetectionModel:
         detections = self.detect_fn(image)
         return detections
 
-
 def process_thread(args, request_queue, response_queue):
     # Load the model(s)
     models = {}
@@ -63,6 +62,7 @@ def process_thread(args, request_queue, response_queue):
             for model_name in models:
                 out_proto.models.data.append(
                     network_compute_bridge_pb2.ModelData(model_name=model_name))
+            out_proto.status = network_compute_bridge_pb2.NetworkComputeStatus.NETWORK_COMPUTE_STATUS_SUCCESS
             response_queue.put(out_proto)
             continue
         else:
@@ -123,18 +123,14 @@ def process_thread(args, request_queue, response_queue):
         scores = []
         
         for det in detections:
-            if len(det.boxes.cls) > 0:
-                boxes.append(det.boxes.xyxy[0])
-                classes.append(det.boxes.cls.item())
-                scores.append(det.boxes.conf.item())
+            for i in range(len(det.boxes.cls)):
+                boxes.append(det.boxes.xyxy[i])
+                classes.append(det.boxes.cls[i])
+                scores.append(det.boxes.conf[i])
         
         boxes = np.array(boxes)
         classes = np.array(classes)
         scores = np.array(scores)
-        
-        # boxes = {det.boxes.xyxy[0] for det in detections}
-        # classes = {det.cls.item() for det in detections}
-        # scores = {det.conf.item() for det in detections}
 
         for i in range(boxes.shape[0]):
             if scores[i] < request.input_data.min_confidence:
@@ -142,16 +138,10 @@ def process_thread(args, request_queue, response_queue):
 
             box = tuple(boxes[i].tolist())
 
-            # Boxes come in with normalized coordinates.  Convert to pixel values.
-            # box = [
-            #     box[0] * image_width, box[1] * image_height, box[2] * image_width,
-            #     box[3] * image_height
-            # ]
-
             score = scores[i]
 
             if classes[i] in model.category_index.keys():
-                label = model.category_index[classes[i]]['name']
+                label = model.category_index[classes[i]]
             else:
                 label = 'N/A'
 
@@ -159,10 +149,10 @@ def process_thread(args, request_queue, response_queue):
 
             print('Found object with label: "' + label + '" and score: ' + str(score))
 
-            point1 = np.array([box[1], box[0]])
-            point2 = np.array([box[3], box[0]])
-            point3 = np.array([box[3], box[2]])
-            point4 = np.array([box[1], box[2]])
+            point1 = np.array([box[0], box[1]])
+            point2 = np.array([box[0], box[3]])
+            point3 = np.array([box[2], box[3]])
+            point4 = np.array([box[2], box[1]])
 
             # Add data to the output proto.
             out_obj = out_proto.object_in_image.add()
@@ -206,6 +196,7 @@ def process_thread(args, request_queue, response_queue):
             cv2.imwrite(debug_image_filename, image)
             print('Wrote debug image output to: "' + debug_image_filename + '"')
 
+        out_proto.status = network_compute_bridge_pb2.NetworkComputeStatus.NETWORK_COMPUTE_STATUS_SUCCESS
         response_queue.put(out_proto)
 
 
@@ -236,7 +227,7 @@ def register_with_robot(options):
     ip = bosdyn.client.common.get_self_ip(options.hostname)
     print('Detected IP address as: ' + ip)
 
-    sdk = bosdyn.client.create_standard_sdk("tensorflow_server")
+    sdk = bosdyn.client.create_standard_sdk("objectdetection_server")
 
     robot = sdk.create_robot(options.hostname)
 
