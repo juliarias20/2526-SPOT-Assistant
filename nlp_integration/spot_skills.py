@@ -223,18 +223,33 @@ class SpotRobot:
                     self.graph_nav_client.upload_edge_snapshot(snapshot)
                 print(f"[spot] Edge snapshots uploaded")
 
-            # Set localization via nearest fiducial
-            # Robot must be able to see a fiducial from its current position.
-            from bosdyn.api.graph_nav import graph_nav_pb2 as gn_pb2
-            localization = gn_pb2.Localization()
-            self.graph_nav_client.set_localization(
-                initial_guess_localization=localization,
-                ko_tform_body=None,
-                max_distance=None,
-                max_yaw=None,
-                fiducial_init=gn_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NEAREST,
+            # Set localization via nearest fiducial.
+            # Localization message is in nav_pb2; SetLocalizationRequest
+            # is in graph_nav_pb2. Both locations are probed for SDK compat.
+            from bosdyn.api.graph_nav import nav_pb2 as _nav_pb2
+            from bosdyn.api.graph_nav import graph_nav_pb2 as _gn_pb2
+
+            _Localization = (
+                getattr(_nav_pb2, "Localization", None)
+                or getattr(_gn_pb2, "Localization", None)
             )
-            print("[spot] Localization set via nearest fiducial")
+            _SetLocReq = (
+                getattr(_gn_pb2, "SetLocalizationRequest", None)
+                or getattr(_nav_pb2, "SetLocalizationRequest", None)
+            )
+            if _Localization is None or _SetLocReq is None:
+                print("[spot] WARNING: Could not find Localization types — "
+                      "skipping fiducial init. Set localization manually.")
+            else:
+                localization = _Localization()
+                self.graph_nav_client.set_localization(
+                    initial_guess_localization=localization,
+                    ko_tform_body=None,
+                    max_distance=None,
+                    max_yaw=None,
+                    fiducial_init=_SetLocReq.FIDUCIAL_INIT_NEAREST,
+                )
+                print("[spot] Localization set via nearest fiducial")
             return True
 
         except Exception as e:
@@ -362,22 +377,36 @@ def scan(
     
     try:
         import math
-        step_rad = (2 * math.pi) / n_rotations
+        # Rotate at 0.5 rad/s. One full 360° = 2π / 0.5 = ~12.6 s.
+        # For n_rotations partial sweeps, rotate for step_duration each,
+        # pausing briefly between steps for image capture.
+        rot_speed   = 0.5            # rad/s
+        step_rad    = (2 * math.pi) / n_rotations
+        step_dur    = step_rad / rot_speed   # seconds per step
+        pause_dur   = 0.5            # pause at each position for camera
+
         for i in range(n_rotations):
-            heading = i * step_rad
+            # Issue velocity command for this step duration.
+            # Pass lease explicitly — required for body velocity commands.
+            end_t = time.time() + step_dur
             cmd = RobotCommandBuilder.synchro_velocity_command(
-                v_x = 0, v_y = 0, v_rot = 0.5   # slow rotation
+                v_x=0.0, v_y=0.0, v_rot=rot_speed
             )
-            robot.command_client.robot_command(cmd, end_time_secs = time.time() + 1.5)
-            time.sleep(1.8)
+            robot.command_client.robot_command(
+                cmd,
+                lease=robot.lease,
+                end_time_secs=end_t,
+            )
+            time.sleep(step_dur + pause_dur)
 
-        # Stop
+        # Come to a stop
         stop = RobotCommandBuilder.synchro_stand_command()
-        robot.command_client.robot_command(stop)
+        robot.command_client.robot_command(stop, lease=robot.lease)
+        time.sleep(0.5)
 
-        return SkillResult(True, skill, "Scan complete -- 360 degree rotation finished",
+        return SkillResult(True, skill, "Scan complete — 360 degree rotation finished",
                            {"n_rotations": n_rotations})
-    
+
     except Exception as e:
         return SkillResult(False, skill, f"Scan error: {e}")
     
