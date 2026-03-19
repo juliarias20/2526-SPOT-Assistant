@@ -241,6 +241,24 @@ class SpotRobot:
                 print("[spot] WARNING: Could not find Localization types — "
                       "skipping fiducial init. Set localization manually.")
             else:
+                # Clear any active robot faults before setting localization.
+                # A fault condition (e.g. from a previous session or estop)
+                # blocks GraphNav and must be cleared first.
+                try:
+                    from bosdyn.client.robot_state import RobotStateClient
+                    from bosdyn.client import robot_command as _rc
+                    fault_client = self.robot.ensure_client(
+                        "robot-fault-clearing"
+                    )
+                    fault_client.clear_behavior_fault(
+                        behavior_fault_id=None,   # clear all faults
+                        lease=None,
+                    )
+                    print("[spot] Behavior faults cleared")
+                except Exception as fault_err:
+                    # Fault clearing is best-effort — log and continue.
+                    print(f"[spot] Fault clear attempt: {fault_err}")
+
                 localization = _Localization()
                 self.graph_nav_client.set_localization(
                     initial_guess_localization=localization,
@@ -386,22 +404,18 @@ def scan(
         pause_dur   = 0.5            # pause at each position for camera
 
         for i in range(n_rotations):
-            # Issue velocity command for this step duration.
-            # Pass lease explicitly — required for body velocity commands.
+            # LeaseKeepAlive manages the lease wallet — do NOT pass lease=
+            # directly to robot_command; it expects the proto not the wrapper.
             end_t = time.time() + step_dur
             cmd = RobotCommandBuilder.synchro_velocity_command(
                 v_x=0.0, v_y=0.0, v_rot=rot_speed
             )
-            robot.command_client.robot_command(
-                cmd,
-                lease=robot.lease,
-                end_time_secs=end_t,
-            )
+            robot.command_client.robot_command(cmd, end_time_secs=end_t)
             time.sleep(step_dur + pause_dur)
 
         # Come to a stop
         stop = RobotCommandBuilder.synchro_stand_command()
-        robot.command_client.robot_command(stop, lease=robot.lease)
+        robot.command_client.robot_command(stop)
         time.sleep(0.5)
 
         return SkillResult(True, skill, "Scan complete — 360 degree rotation finished",
