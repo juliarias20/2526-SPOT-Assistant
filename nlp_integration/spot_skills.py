@@ -201,6 +201,13 @@ class SpotRobot:
                 print(f"[spot] WARNING: MAP_PATH '{MAP_PATH}' not found — "
                       "navigate() will fail. Run record_map.py first.")
 
+            # Upload GraphNav map and set localization
+            if MAP_PATH and os.path.isdir(MAP_PATH):
+                self._upload_map(MAP_PATH)
+            else:
+                print(f"[spot] WARNING: MAP_PATH '{MAP_PATH}' not found — "
+                      "navigate() will fail. Run record_map.py first.")
+
             self._connected = True
             print(f"[spot] Connected and standing: {SPOT_IP}")
             return True
@@ -511,6 +518,26 @@ def navigate(
             cmd_duration=timeout_sec,
             **nav_kwargs
         )
+        nav_kwargs = {}
+        if _TravelParams is not None:
+            nav_kwargs["travel_params"] = _TravelParams(max_distance=0.5)
+
+        # navigate_to signature changed in SDK >= 3.3:
+        #   < 3.3  : navigate_to(waypoint_id, travel_params=...)
+        #   >= 3.3 : navigate_to(waypoint_id, cmd_duration, travel_params=...)
+        # Probe the signature at runtime and call accordingly.
+        import inspect
+        sig = inspect.signature(nav_client.navigate_to)
+        params = list(sig.parameters.keys())
+        if "cmd_duration" in params:
+            # Newer SDK — cmd_duration is required (seconds robot will attempt nav)
+            cmd_id = nav_client.navigate_to(
+                waypoint_id,
+                cmd_duration=timeout_sec,
+                **nav_kwargs
+            )
+        else:
+            cmd_id = nav_client.navigate_to(waypoint_id, **nav_kwargs)
 
         # Poll until complete or timeout
         start = time.time()
