@@ -66,7 +66,9 @@ def main(output_dir: str):
 
         # ── Start recording ────────────────────────────────────────────────────
         response = recording.start_recording()
-        if response.status != recording_pb2.StartRecordingResponse.STATUS_OK:
+        # STATUS_OK = 0 in the recording proto; compare numerically to avoid
+        # SDK version differences in how the enum constant is exposed
+        if response.status != 0:
             print(f"[record] Failed to start recording: {response.status}")
             return
         print("[record] Recording started. Walk SPOT to each location.")
@@ -103,8 +105,9 @@ def main(output_dir: str):
         # ── Optimize map ───────────────────────────────────────────────────────
         print("[record] Optimizing map (anchoring)...")
         try:
+            from bosdyn.api.graph_nav import map_processing_pb2
             map_processing.process_anchoring(
-                params=map_processing.ProcessAnchoringRequest.Params()
+                params=map_processing_pb2.ProcessAnchoringRequest.Params()
             )
             print("[record] Map anchoring complete.")
         except Exception as e:

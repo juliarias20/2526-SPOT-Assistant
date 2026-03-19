@@ -216,11 +216,14 @@ def navigate(
     try:
         nav_client = robot.graph_nav_client
 
-        # Upload graph if not already uploaded (assumes map is pre-recorded)
-        # In practice, load the map once at startup via nav_client.upload_graph(...)
+        # Resolve human-readable name to GraphNav UUID via WAYPOINT_MAP.
+        # Falls back to the raw string if not found (allows UUID passthrough).
+        resolved_id = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
+        if resolved_id != waypoint_id:
+            print(f"[spot] Resolved '{waypoint_id}' -> '{resolved_id}'")
 
         cmd_id = nav_client.navigate_to(
-            waypoint_id,
+            resolved_id,
             travel_params = nav_pb2.TravelParams(max_distance = 0.5)
         )
 
@@ -230,12 +233,12 @@ def navigate(
             feedback = nav_client.navigation_feedback(cmd_id)
             status = feedback.status
             if status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
-                return SkillResult(True, skill, f"REached waypoint '{waypoint_id}'",
-                                   {"waypoint_id": waypoint_id})
+                return SkillResult(True, skill, f"Reached waypoint '{waypoint_id}'",
+                                   {"waypoint_id": waypoint_id, "resolved_id": resolved_id})
             if status in (
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
-                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERIDDEN,
+                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERRIDDEN,
             ):
                 return SkillResult(False, skill,
                                    f"Navigation failed (status = {status})",

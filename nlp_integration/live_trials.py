@@ -17,13 +17,13 @@ Extra fields logged vs. dry-run (evaluate_phase4.py):
     operator_notes      -- free-text note entered by operator after each trial
 
 Usage:
-    set USE_SPOT=true
-    set SPOT_IP=192.168.80.3
-    set SPOT_USER=user
-    set SPOT_PASS=password
-    set SPOT_MAP_PATH=maps/trial_space
-    python live_trials.py
-
+    $env:USE_SPOT    = "true"
+    $env:SPOT_IP     = "192.168.80.3"     # your SPOT's IP
+    $env:SPOT_USER   = "user"
+    $env:SPOT_PASS   = "yourpassword"
+    $env:SPOT_MAP_PATH = "maps/trial_space"
+    python .\live_trials.py
+    
 Output:
     data/live_trials.jsonl      -- per-trial log (appends on re-run)
     data/live_trials_<run>.json -- full run summary with all records + metrics
