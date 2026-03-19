@@ -63,6 +63,10 @@ SPOT_IP: str = os.environ.get("SPOT_IP", "192.168.80.3")
 SPOT_USER: str = os.environ.get("SPOT_USER", "user")
 SPOT_PASS: str = os.environ.get("SPOT_PASS", "password")
 
+# Camera source for YOLO detection and grasp targeting.
+# Must match the source name passed to image_client.get_image_from_sources().
+CAMERA_SOURCE: str = os.environ.get("CAMERA_SOURCE", "frontleft_fisheye_image")
+
 # Navigation
 NAVIGATE_TIMEOUT_SEC: float = 30.0
 NAVIGATE_POLL_SEC: float = 0.5
@@ -193,13 +197,6 @@ class SpotRobot:
             # Clear all behavior faults before doing anything else.
             # Faults from prior sessions block navigation and localization.
             self._clear_faults()
-
-            # Upload GraphNav map and set localization
-            if MAP_PATH and os.path.isdir(MAP_PATH):
-                self._upload_map(MAP_PATH)
-            else:
-                print(f"[spot] WARNING: MAP_PATH '{MAP_PATH}' not found — "
-                      "navigate() will fail. Run record_map.py first.")
 
             # Upload GraphNav map and set localization
             if MAP_PATH and os.path.isdir(MAP_PATH):
@@ -518,26 +515,6 @@ def navigate(
             cmd_duration=timeout_sec,
             **nav_kwargs
         )
-        nav_kwargs = {}
-        if _TravelParams is not None:
-            nav_kwargs["travel_params"] = _TravelParams(max_distance=0.5)
-
-        # navigate_to signature changed in SDK >= 3.3:
-        #   < 3.3  : navigate_to(waypoint_id, travel_params=...)
-        #   >= 3.3 : navigate_to(waypoint_id, cmd_duration, travel_params=...)
-        # Probe the signature at runtime and call accordingly.
-        import inspect
-        sig = inspect.signature(nav_client.navigate_to)
-        params = list(sig.parameters.keys())
-        if "cmd_duration" in params:
-            # Newer SDK — cmd_duration is required (seconds robot will attempt nav)
-            cmd_id = nav_client.navigate_to(
-                waypoint_id,
-                cmd_duration=timeout_sec,
-                **nav_kwargs
-            )
-        else:
-            cmd_id = nav_client.navigate_to(waypoint_id, **nav_kwargs)
 
         # Poll until complete or timeout
         start = time.time()
@@ -671,12 +648,22 @@ def pick_up(
         else:
             cx, cy = 320, 240 # image center fallback
 
+        # Capture a fresh frame for the grasp request so the transforms
+        # snapshot and camera model are consistent with the pixel coordinates.
+        from bosdyn.client.image import ImageClient
+        image_client = robot.robot.ensure_client(ImageClient.default_service_name)
+        image_responses = image_client.get_image_from_sources([CAMERA_SOURCE])
+        if not image_responses:
+            return SkillResult(False, skill, "Could not acquire camera frame for grasp")
+        image_response = image_responses[0]
+
+        # frame_name_image_sensor must match the camera source name,
+        # NOT BODY_FRAME_NAME — using BODY_FRAME_NAME causes grasp failures.
         grasp = manipulation_api_pb2.PickObjectInImage(
             pixel_xy = geometry_pb2.Vec2(x = cx, y = cy),
-            transforms_snapshot_for_camera = robot.state_client
-                .get_robot_state().kinematic_state.transforms_snapshot,
-            frame_name_image_sensor = BODY_FRAME_NAME,
-            camera_model = None, # filled by SDK from robot state
+            transforms_snapshot_for_camera = image_response.shot.transforms_snapshot,
+            frame_name_image_sensor = image_response.shot.frame_name_image_sensor,
+            camera_model = image_response.source.pinhole,
         )
 
         request = manipulation_api_pb2.ManipulationApiRequest(

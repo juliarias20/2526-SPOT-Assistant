@@ -17,7 +17,7 @@ Extra fields logged vs. dry-run (evaluate_phase4.py):
     operator_notes      -- free-text note entered by operator after each trial
 
 Usage:
-`   $env:SPOT_START_WAYPOINT = "your-start-uuid-here"
+    $env:SPOT_START_WAYPOINT = "your-start-uuid-here"
     $env:USE_SPOT    = "true"
     $env:SPOT_IP     = "192.168.80.3"     # your SPOT's IP
     $env:SPOT_USER   = "user"
