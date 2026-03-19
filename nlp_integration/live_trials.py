@@ -17,13 +17,14 @@ Extra fields logged vs. dry-run (evaluate_phase4.py):
     operator_notes      -- free-text note entered by operator after each trial
 
 Usage:
+`   $env:SPOT_START_WAYPOINT = "your-start-uuid-here"
     $env:USE_SPOT    = "true"
     $env:SPOT_IP     = "192.168.80.3"     # your SPOT's IP
     $env:SPOT_USER   = "user"
     $env:SPOT_PASS   = "yourpassword"
     $env:SPOT_MAP_PATH = "maps/trial_space"
-    python .\live_trials.py
-    
+    python live_trials.py
+
 Output:
     data/live_trials.jsonl      -- per-trial log (appends on re-run)
     data/live_trials_<run>.json -- full run summary with all records + metrics
@@ -41,7 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from interpret import Phase1Interpreter
 from executor import TaskExecutor, ExecutionResult
-from spot_skills import SpotRobot
+from spot_skills import SpotRobot, _get_perception
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 LOG_FILE = Path("data/live_trials.jsonl")
@@ -550,6 +551,14 @@ def main() -> None:
     interpreter = Phase1Interpreter()
     executor    = TaskExecutor(robot, interpreter=interpreter)
     robot.connect()
+
+    # Debug snapshot: capture front camera, run YOLO, save debug_camera.jpg.
+    # Called here (after interpreter is built) so _get_perception() reuses
+    # the already-loaded SentenceTransformer embedder instead of creating
+    # a second one. Open debug_camera.jpg to verify detections before trials.
+    if robot.connected:
+        _get_perception(embedder=interpreter.embedder)   # warm the singleton
+        robot._debug_camera_snapshot()
 
     try:
         for i, trial in enumerate(LIVE_TRIALS, 1):

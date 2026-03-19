@@ -219,3 +219,68 @@
 - [ ] Dry run presentation
 - [ ] Revised draft due April 18
 - [ ] Defense by May 2
+
+---
+
+## Week of 2026-03-19
+
+### What I built / fixed
+- run.py: interactive REPL for single-command or session-based execution on SPOT
+- spot_skills.py: _get_perception() module-level singleton + _clear_faults() + _debug_camera_snapshot() + _upload_map() wired into connect()
+- spot_skills.py: SDK 5.1.4 compatibility fixes — cmd_duration in navigate_to, TravelParams probe, localization type probe, fault clearing via RobotCommandBuilder
+- spot_skills.py: fiducial + no-fiducial fallback localization (START_WAYPOINT env var)
+- live_trials.py: debug snapshot call moved after executor build so _get_perception() reuses shared embedder
+- pick_up: frame_name_image_sensor = BODY_FRAME_NAME flagged as likely grasp failure — pending fix before live trials
+
+### SDK version confirmed
+- bosdyn-client 5.1.4 (not 3.2.2 as written in lab guide)
+- navigate_to requires cmd_duration as positional arg in 5.1.4
+- TravelParams in graph_nav_pb2 (not nav_pb2) in 5.1.4
+- Localization in nav_pb2, SetLocalizationRequest in graph_nav_pb2 in 5.1.4
+- behavior_fault_clear_command available on RobotCommandBuilder in 5.1.4
+
+### Live trial blockers resolved
+- Robot behavior faults: _clear_faults() clears via RobotCommandBuilder.behavior_fault_clear_command per fault ID
+- Localization without fiducial: START_WAYPOINT env var + FIDUCIAL_INIT_NO_FIDUCIAL fallback
+- Double embedder load: _get_perception(embedder=interpreter.embedder) called in live_trials.py after Phase1Interpreter() is constructed
+
+### Known issue pending (non-blocking for navigation/scan/locate)
+- pick_up frame_name_image_sensor = BODY_FRAME_NAME — should be camera source string e.g. "frontleft_fisheye_image". Will cause grasp failures on live hardware. Fix before pick_up trials.
+
+### Final regression — all phases locked (run_20260319_212525)
+
+| Phase | Metric                   | Score   |
+|-------|--------------------------|---------|
+| I     | Intent Accuracy          | 0.740   |
+| I     | Clarification F1         | 0.824   |
+| II    | Clause Count Accuracy    | 100%    |
+| II    | Per-Clause Intent Acc.   | 96.4%   |
+| II    | Step-Sequence F1         | 0.863   |
+| II    | Edge-Type Accuracy       | 100%    |
+| III   | Top-1 Grounding Acc.     | 85.0%   |
+| III   | Top-3 Grounding Acc.     | 90.0%   |
+| III   | Mean Reciprocal Rank     | 0.889   |
+| IV    | Task Completion Rate     | 95.0%   |
+| IV    | Outcome Accuracy         | 100.0%  |
+| IV    | Plan Accuracy            | 100.0%  |
+| IV    | Object Extraction Acc.   | 100.0%  |
+| IV    | Waypoint Extraction Acc. | 100.0%  |
+
+Single BertModel load confirmed. All evaluation files verified correct.
+
+### Finished
+- run.py (interactive task runner)
+- All SDK 5.1.4 compatibility fixes applied
+- Final regression test passed — all numbers locked
+- thesis_draft.docx (IEEE two-column, 10 sections, 23 references, Tables I + II)
+- Architecture diagram (React artifact, interactive phase cards, animated data flow)
+- implementation_notes.md current
+
+### Next steps
+- [ ] Fix pick_up frame_name_image_sensor before grasp trials
+- [ ] Set SPOT_START_WAYPOINT to start position UUID
+- [ ] Fill WAYPOINT_MAP in spot_skills.py from record_map.py output
+- [ ] Run live_trials.py on SPOT (20 trials, USE_SPOT=true)
+- [ ] Replace placeholder live trial rows in thesis_draft.docx after trials
+- [ ] Revised draft due April 18
+- [ ] Defense due May 2

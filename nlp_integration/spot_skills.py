@@ -16,10 +16,13 @@ Skill registry:
     release(...)                    -> open gripper to release held object
 
 Environment variables (set before running):
-    SPOT_IP         192.168.80.3
-    SPOT_USER       user
-    SPOT_PASS       password
-    USE_SPOT        true    (set to false to run in mock/dry-run mode)
+    $env:CAMERA_SOURCE = "frontleft_fisheye_image"   # default
+    $env:SPOT_START_WAYPOINT = "your-start-uuid-here"
+    $env:USE_SPOT    = "true"
+    $env:SPOT_IP     = "192.168.80.3"     # your SPOT's IP
+    $env:SPOT_USER   = "user"
+    $env:SPOT_PASS   = "yourpassword"
+    $env:SPOT_MAP_PATH = "maps/trial_space"
 """
 
 import os
@@ -69,6 +72,28 @@ ARM_READY_TIMEOUT_SEC: float = 5.0
 GRASP_TIMEOUT_SEC: float = 15.0
 DELIVER_TIMEOUT_SEC: float = 8.0
 
+# ── GraphNav map ─────────────────────────────────────────────────────────────
+# Path to the recorded GraphNav map directory (output of record_map.py).
+# Override with the SPOT_MAP_PATH environment variable.
+MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
+
+# Human-readable waypoint name -> GraphNav UUID.
+# Populate this after running record_map.py — copy the printed WAYPOINT_MAP
+# dict here. Navigate() resolves names through this table before calling SDK.
+WAYPOINT_MAP: dict = {
+    # "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "table":   "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "kitchen": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "user":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+}
+
+# Starting waypoint for no-fiducial localization fallback.
+# Set this to the UUID of the waypoint SPOT starts at when no AprilTag
+# is visible. Copy the UUID from record_map.py output for your start position.
+# Override with the SPOT_START_WAYPOINT environment variable.
+# Leave empty ("") to skip the fallback and rely on fiducial-only localization.
+START_WAYPOINT: str = os.environ.get("SPOT_START_WAYPOINT", "")
+
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -87,20 +112,19 @@ class SkillResult:
     data:           Dict[str, Any] = field(default_factory = dict)
     mock:           bool = False
 
-# ── Perception singleton ──────────────────────────────────────────────────────
+# ── Perception singleton ─────────────────────────────────────────────────────
 # PerceptionModule is expensive to construct (loads BertModel + YOLOv8).
 # A single module-level instance is shared across all locate() calls for the
 # lifetime of a live trial session. The embedder can optionally be pre-loaded
-# by Phase1Interpreter and passed in on first use to avoid a third load.
-
-_perception: Optional["PerceptionModule"] = None  # type: ignore[name-defined]
+# by Phase1Interpreter and passed in on first use to avoid a redundant load.
+_perception = None
 
 def _get_perception(embedder=None):
     """Return the module-level PerceptionModule singleton, creating it if needed.
 
     Pass embedder on the first call to share the SentenceTransformer instance
-    that was already loaded by Phase1Interpreter, avoiding a redundant model load.
-    Subsequent calls return the cached instance regardless of the embedder arg.
+    already loaded by Phase1Interpreter. Subsequent calls return the cached
+    instance regardless of the embedder arg.
     """
     global _perception
     if _perception is None:
@@ -160,17 +184,264 @@ class SpotRobot:
             self.lease_ka = LeaseKeepAlive(self.lease_client, must_acquire = True, return_at_exit = True)
 
             # Power on and stand
-            self.robot.power_on(timeout_sec = 20)
+            self.robot.power_on(timeout_sec=20)
             assert self.robot.is_powered_on(), "SPOT failed to power on."
             cmd = RobotCommandBuilder.synchro_stand_command()
             self.command_client.robot_command(cmd)
-            time.sleep(1.5)
+            time.sleep(2.0)
+
+            # Clear all behavior faults before doing anything else.
+            # Faults from prior sessions block navigation and localization.
+            self._clear_faults()
+
+            # Upload GraphNav map and set localization
+            if MAP_PATH and os.path.isdir(MAP_PATH):
+                self._upload_map(MAP_PATH)
+            else:
+                print(f"[spot] WARNING: MAP_PATH '{MAP_PATH}' not found — "
+                      "navigate() will fail. Run record_map.py first.")
 
             self._connected = True
             print(f"[spot] Connected and standing: {SPOT_IP}")
             return True
         except Exception as e:
             print(f"[spot] Connection failed: {e}")
+            return False
+
+    def _clear_faults(self):
+        """Clear all active behavior faults.
+
+        SDK 5.1.1: RobotCommandBuilder.behavior_fault_clear_command(fault_id)
+        is the correct method. Falls back to direct proto construction if the
+        helper is unavailable. Must run after power-on and lease acquisition.
+        """
+        try:
+            state = self.state_client.get_robot_state()
+            faults = state.behavior_fault_state.faults
+            if not faults:
+                print("[spot] No behavior faults to clear")
+                return
+            for fault in faults:
+                fid = fault.behavior_fault_id
+                # SDK 5.1.1: RobotCommandBuilder has behavior_fault_clear_command
+                clear_fn = getattr(
+                    RobotCommandBuilder, "behavior_fault_clear_command", None
+                )
+                if clear_fn is not None:
+                    cmd = clear_fn(fid)
+                else:
+                    # Fallback: build proto directly
+                    from bosdyn.api import robot_command_pb2
+                    cmd = robot_command_pb2.RobotCommand()
+                    cmd.full_body_command.clear_behavior_fault_request.behavior_fault_id = fid
+                self.command_client.robot_command(cmd)
+                print(f"[spot] Cleared fault id={fid} cause={fault.cause}")
+            time.sleep(0.5)
+            state2 = self.state_client.get_robot_state()
+            remaining = state2.behavior_fault_state.faults
+            if remaining:
+                print(f"[spot] WARNING: {len(remaining)} fault(s) still active. "
+                      "Clear manually from tablet if this persists.")
+            else:
+                print("[spot] All behavior faults cleared")
+        except Exception as e:
+            print(f"[spot] Fault clear error: {e}")
+
+    def _debug_camera_snapshot(self):
+        """Capture a front camera frame, run YOLO, save annotated image.
+
+        Saved to debug_camera.jpg in the working directory.
+        Open it to verify YOLO detections and bounding boxes are working
+        before starting trials.
+        """
+        try:
+            from bosdyn.client.image import ImageClient
+            import numpy as np
+
+            image_client = self.robot.ensure_client(
+                ImageClient.default_service_name
+            )
+            sources = ["frontleft_fisheye_image"]
+            responses = image_client.get_image_from_sources(sources)
+            if not responses:
+                print("[spot] Debug snapshot: no image returned")
+                return
+
+            resp = responses[0]
+            img_bytes = resp.shot.image.data
+            fmt = resp.shot.image.format
+
+            # Decode to numpy
+            import struct
+            if fmt == 1:   # JPEG
+                import io
+                try:
+                    from PIL import Image as PILImage
+                    img = PILImage.open(io.BytesIO(img_bytes))
+                    frame = np.array(img)
+                except ImportError:
+                    import cv2
+                    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            else:
+                # Raw — width × height × channels
+                w = resp.shot.image.cols
+                h = resp.shot.image.rows
+                frame = np.frombuffer(img_bytes, dtype=np.uint8).reshape(h, w, -1)
+
+            # Run YOLO
+            perc = _get_perception()
+            results = perc._yolo(frame) if perc._yolo else None
+
+            # Draw boxes and save
+            try:
+                import cv2
+                annotated = frame.copy()
+                if results:
+                    for r in results:
+                        for box in r.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            label = perc._yolo.names[int(box.cls[0])]
+                            conf  = float(box.conf[0])
+                            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(annotated, f"{label} {conf:.2f}",
+                                        (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.5, (0, 255, 0), 1)
+                cv2.imwrite("debug_camera.jpg", annotated)
+                n_boxes = sum(len(r.boxes) for r in results) if results else 0
+                print(f"[spot] Debug snapshot saved: debug_camera.jpg "
+                      f"({n_boxes} detection(s))")
+            except ImportError:
+                # cv2 not available — save raw JPEG
+                with open("debug_camera.jpg", "wb") as f:
+                    f.write(img_bytes)
+                print("[spot] Debug snapshot saved: debug_camera.jpg (no cv2 — raw JPEG)")
+
+        except Exception as e:
+            print(f"[spot] Debug snapshot failed: {e}")
+
+    def _upload_map(self, map_dir: str) -> bool:
+        """Upload a recorded GraphNav map and set localization via nearest fiducial.
+
+        map_dir must contain:
+            graph          — serialized GraphNav graph (from recording_command_client)
+            waypoint_snapshots/   — one file per waypoint UUID
+            edge_snapshots/       — one file per edge UUID
+
+        Returns True if upload and localization succeeded.
+        """
+        import os
+        from bosdyn.api.graph_nav import map_pb2
+        from bosdyn.client.graph_nav import GraphNavClient
+
+        try:
+            graph_path = os.path.join(map_dir, "graph")
+            if not os.path.exists(graph_path):
+                print(f"[spot] No 'graph' file found in {map_dir}")
+                return False
+
+            # Load and upload graph
+            with open(graph_path, "rb") as f:
+                graph = map_pb2.Graph()
+                graph.ParseFromString(f.read())
+            self.graph_nav_client.upload_graph(graph=graph)
+            print(f"[spot] Graph uploaded: {len(graph.waypoints)} waypoints, "
+                  f"{len(graph.edges)} edges")
+
+            # Upload waypoint snapshots
+            wp_snap_dir = os.path.join(map_dir, "waypoint_snapshots")
+            if os.path.isdir(wp_snap_dir):
+                for fname in os.listdir(wp_snap_dir):
+                    fpath = os.path.join(wp_snap_dir, fname)
+                    with open(fpath, "rb") as f:
+                        snapshot = map_pb2.WaypointSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_waypoint_snapshot(snapshot)
+                print(f"[spot] Waypoint snapshots uploaded")
+
+            # Upload edge snapshots
+            edge_snap_dir = os.path.join(map_dir, "edge_snapshots")
+            if os.path.isdir(edge_snap_dir):
+                for fname in os.listdir(edge_snap_dir):
+                    fpath = os.path.join(edge_snap_dir, fname)
+                    with open(fpath, "rb") as f:
+                        snapshot = map_pb2.EdgeSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_edge_snapshot(snapshot)
+                print(f"[spot] Edge snapshots uploaded")
+
+            # Set localization via nearest fiducial.
+            # Localization message is in nav_pb2; SetLocalizationRequest
+            # is in graph_nav_pb2. Both locations are probed for SDK compat.
+            # SDK 5.1.1: probe both modules — location varies across 4.x/5.x
+            from bosdyn.api.graph_nav import nav_pb2 as _nav_pb2
+            from bosdyn.api.graph_nav import graph_nav_pb2 as _gn_pb2
+            _Localization = (
+                getattr(_nav_pb2, "Localization", None)
+                or getattr(_gn_pb2, "Localization", None)
+            )
+            _SetLocReq = (
+                getattr(_gn_pb2, "SetLocalizationRequest", None)
+                or getattr(_nav_pb2, "SetLocalizationRequest", None)
+            )
+            if _Localization is None or _SetLocReq is None:
+                print("[spot] WARNING: Could not find Localization types in "
+                      "nav_pb2 or graph_nav_pb2 — skipping localization.")
+            else:
+                # Attempt 1: localize via nearest AprilTag fiducial.
+                # SPOT must be able to see a fiducial from its start position.
+                localized = False
+                try:
+                    localization = _Localization()
+                    self.graph_nav_client.set_localization(
+                        initial_guess_localization=localization,
+                        ko_tform_body=None,
+                        max_distance=None,
+                        max_yaw=None,
+                        fiducial_init=_SetLocReq.FIDUCIAL_INIT_NEAREST,
+                    )
+                    print("[spot] Localization set via nearest fiducial")
+                    localized = True
+                except Exception as fid_err:
+                    print(f"[spot] Fiducial localization failed: {fid_err}")
+
+                # Attempt 2: no-fiducial fallback using a known start waypoint.
+                # Requires START_WAYPOINT to be set (UUID from record_map.py).
+                # SPOT must be physically at that waypoint when connecting.
+                if not localized:
+                    if START_WAYPOINT:
+                        try:
+                            print(f"[spot] Trying no-fiducial localization "
+                                  f"at waypoint '{START_WAYPOINT}'...")
+                            localization = _Localization()
+                            localization.waypoint_id = START_WAYPOINT
+                            self.graph_nav_client.set_localization(
+                                initial_guess_localization=localization,
+                                ko_tform_body=None,
+                                max_distance=None,
+                                max_yaw=None,
+                                fiducial_init=_SetLocReq.FIDUCIAL_INIT_NO_FIDUCIAL,
+                            )
+                            print(f"[spot] Localization set via waypoint "
+                                  f"'{START_WAYPOINT}' (no fiducial)")
+                            localized = True
+                        except Exception as wpt_err:
+                            print(f"[spot] No-fiducial localization failed: {wpt_err}")
+                    else:
+                        print("[spot] No START_WAYPOINT set — cannot attempt "
+                              "no-fiducial fallback.")
+
+                if not localized:
+                    print("[spot] WARNING: Localization not set. "
+                          "Navigate commands will fail.")
+                    print("[spot] Fix: ensure SPOT can see an AprilTag, OR "
+                          "set START_WAYPOINT to a known waypoint UUID and "
+                          "place SPOT at that position before connecting.")
+            return True
+
+        except Exception as e:
+            print(f"[spot] Map upload / localization failed: {e}")
+            print("[spot] Navigate commands will fail until localization is set.")
             return False
 
     def disconnect(self):
@@ -216,15 +487,29 @@ def navigate(
     try:
         nav_client = robot.graph_nav_client
 
-        # Resolve human-readable name to GraphNav UUID via WAYPOINT_MAP.
+        # Resolve human-readable name -> GraphNav UUID via WAYPOINT_MAP.
         # Falls back to the raw string if not found (allows UUID passthrough).
-        resolved_id = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
-        if resolved_id != waypoint_id:
-            print(f"[spot] Resolved '{waypoint_id}' -> '{resolved_id}'")
+        resolved = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
+        if resolved != waypoint_id:
+            print(f"[spot] navigate: '{waypoint_id}' -> '{resolved}'")
+        waypoint_id = resolved
 
+        # SDK 5.1.1: TravelParams moved to graph_nav_pb2
+        # Probe both locations for safety across minor version differences.
+        nav_kwargs = {}
+        _TravelParams = (
+            getattr(graph_nav_pb2, "TravelParams", None)
+            or getattr(nav_pb2, "TravelParams", None)
+        )
+        if _TravelParams is not None:
+            nav_kwargs["travel_params"] = _TravelParams(max_distance=0.5)
+
+        # SDK 5.1.1: navigate_to(waypoint_id, cmd_duration, travel_params=None)
+        # cmd_duration = how long (sec) the robot will attempt navigation
         cmd_id = nav_client.navigate_to(
-            resolved_id,
-            travel_params = nav_pb2.TravelParams(max_distance = 0.5)
+            waypoint_id,
+            cmd_duration=timeout_sec,
+            **nav_kwargs
         )
 
         # Poll until complete or timeout
@@ -234,11 +519,11 @@ def navigate(
             status = feedback.status
             if status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
                 return SkillResult(True, skill, f"Reached waypoint '{waypoint_id}'",
-                                   {"waypoint_id": waypoint_id, "resolved_id": resolved_id})
+                                   {"waypoint_id": waypoint_id})
             if status in (
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
-                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERRIDDEN,
+                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERIDDEN,
             ):
                 return SkillResult(False, skill,
                                    f"Navigation failed (status = {status})",
@@ -268,22 +553,32 @@ def scan(
     
     try:
         import math
-        step_rad = (2 * math.pi) / n_rotations
-        for i in range(n_rotations):
-            heading = i * step_rad
-            cmd = RobotCommandBuilder.synchro_velocity_command(
-                v_x = 0, v_y = 0, v_rot = 0.5   # slow rotation
-            )
-            robot.command_client.robot_command(cmd, end_time_secs = time.time() + 1.5)
-            time.sleep(1.8)
+        # Rotate at 0.5 rad/s. One full 360° = 2π / 0.5 = ~12.6 s.
+        # For n_rotations partial sweeps, rotate for step_duration each,
+        # pausing briefly between steps for image capture.
+        rot_speed   = 0.5            # rad/s
+        step_rad    = (2 * math.pi) / n_rotations
+        step_dur    = step_rad / rot_speed   # seconds per step
+        pause_dur   = 0.5            # pause at each position for camera
 
-        # Stop
+        for i in range(n_rotations):
+            # LeaseKeepAlive manages the lease wallet — do NOT pass lease=
+            # directly to robot_command; it expects the proto not the wrapper.
+            end_t = time.time() + step_dur
+            cmd = RobotCommandBuilder.synchro_velocity_command(
+                v_x=0.0, v_y=0.0, v_rot=rot_speed
+            )
+            robot.command_client.robot_command(cmd, end_time_secs=end_t)
+            time.sleep(step_dur + pause_dur)
+
+        # Come to a stop
         stop = RobotCommandBuilder.synchro_stand_command()
         robot.command_client.robot_command(stop)
+        time.sleep(0.5)
 
-        return SkillResult(True, skill, "Scan complete -- 360 degree rotation finished",
+        return SkillResult(True, skill, "Scan complete — 360 degree rotation finished",
                            {"n_rotations": n_rotations})
-    
+
     except Exception as e:
         return SkillResult(False, skill, f"Scan error: {e}")
     
@@ -305,8 +600,8 @@ def locate(
                             "bbox": [100, 150, 200, 250],
                             "confidence": 0.85}, mock = True)
     try:
-        # Use module-level perception singleton — avoids re-loading BertModel
-        # on every locate() call during a live trial.
+        # Use module-level perception singleton — avoids reloading BertModel
+        # and YOLOv8 on every locate() call during a live trial session.
         perc = _get_perception()
         scene = perc.get_scene_objects()
 
