@@ -69,6 +69,21 @@ ARM_READY_TIMEOUT_SEC: float = 5.0
 GRASP_TIMEOUT_SEC: float = 15.0
 DELIVER_TIMEOUT_SEC: float = 8.0
 
+# ── GraphNav map ─────────────────────────────────────────────────────────────
+# Path to the recorded GraphNav map directory (output of record_map.py).
+# Override with the SPOT_MAP_PATH environment variable.
+MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
+
+# Human-readable waypoint name -> GraphNav UUID.
+# Populate this after running record_map.py — copy the printed WAYPOINT_MAP
+# dict here. Navigate() resolves names through this table before calling SDK.
+WAYPOINT_MAP: dict = {
+    # "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "table":   "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "kitchen": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "user":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+}
+
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
 @dataclass
@@ -144,11 +159,87 @@ class SpotRobot:
             self.command_client.robot_command(cmd)
             time.sleep(1.5)
 
+            # Upload GraphNav map and set localization
+            if MAP_PATH and os.path.isdir(MAP_PATH):
+                self._upload_map(MAP_PATH)
+            else:
+                print(f"[spot] WARNING: MAP_PATH '{MAP_PATH}' not found — "
+                      "navigate() will fail. Run record_map.py first.")
+
             self._connected = True
             print(f"[spot] Connected and standing: {SPOT_IP}")
             return True
         except Exception as e:
             print(f"[spot] Connection failed: {e}")
+            return False
+
+    def _upload_map(self, map_dir: str) -> bool:
+        """Upload a recorded GraphNav map and set localization via nearest fiducial.
+
+        map_dir must contain:
+            graph          — serialized GraphNav graph (from recording_command_client)
+            waypoint_snapshots/   — one file per waypoint UUID
+            edge_snapshots/       — one file per edge UUID
+
+        Returns True if upload and localization succeeded.
+        """
+        import os
+        from bosdyn.api.graph_nav import map_pb2
+        from bosdyn.client.graph_nav import GraphNavClient
+
+        try:
+            graph_path = os.path.join(map_dir, "graph")
+            if not os.path.exists(graph_path):
+                print(f"[spot] No 'graph' file found in {map_dir}")
+                return False
+
+            # Load and upload graph
+            with open(graph_path, "rb") as f:
+                graph = map_pb2.Graph()
+                graph.ParseFromString(f.read())
+            self.graph_nav_client.upload_graph(graph=graph)
+            print(f"[spot] Graph uploaded: {len(graph.waypoints)} waypoints, "
+                  f"{len(graph.edges)} edges")
+
+            # Upload waypoint snapshots
+            wp_snap_dir = os.path.join(map_dir, "waypoint_snapshots")
+            if os.path.isdir(wp_snap_dir):
+                for fname in os.listdir(wp_snap_dir):
+                    fpath = os.path.join(wp_snap_dir, fname)
+                    with open(fpath, "rb") as f:
+                        snapshot = map_pb2.WaypointSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_waypoint_snapshot(snapshot)
+                print(f"[spot] Waypoint snapshots uploaded")
+
+            # Upload edge snapshots
+            edge_snap_dir = os.path.join(map_dir, "edge_snapshots")
+            if os.path.isdir(edge_snap_dir):
+                for fname in os.listdir(edge_snap_dir):
+                    fpath = os.path.join(edge_snap_dir, fname)
+                    with open(fpath, "rb") as f:
+                        snapshot = map_pb2.EdgeSnapshot()
+                        snapshot.ParseFromString(f.read())
+                    self.graph_nav_client.upload_edge_snapshot(snapshot)
+                print(f"[spot] Edge snapshots uploaded")
+
+            # Set localization via nearest fiducial
+            # Robot must be able to see a fiducial from its current position.
+            from bosdyn.api.graph_nav import graph_nav_pb2 as gn_pb2
+            localization = gn_pb2.Localization()
+            self.graph_nav_client.set_localization(
+                initial_guess_localization=localization,
+                ko_tform_body=None,
+                max_distance=None,
+                max_yaw=None,
+                fiducial_init=gn_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NEAREST,
+            )
+            print("[spot] Localization set via nearest fiducial")
+            return True
+
+        except Exception as e:
+            print(f"[spot] Map upload / localization failed: {e}")
+            print("[spot] Navigate commands will fail until localization is set.")
             return False
 
     def disconnect(self):
@@ -194,8 +285,12 @@ def navigate(
     try:
         nav_client = robot.graph_nav_client
 
-        # Upload graph if not already uploaded (assumes map is pre-recorded)
-        # In practice, load the map once at startup via nav_client.upload_graph(...)
+        # Resolve human-readable name -> GraphNav UUID via WAYPOINT_MAP.
+        # Falls back to the raw string if not found (allows UUID passthrough).
+        resolved = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
+        if resolved != waypoint_id:
+            print(f"[spot] navigate: '{waypoint_id}' -> '{resolved}'")
+        waypoint_id = resolved
 
         # TravelParams moved between SDK versions:
         #   < 3.3  : bosdyn.api.graph_nav.nav_pb2.TravelParams
@@ -209,7 +304,22 @@ def navigate(
         if _TravelParams is not None:
             nav_kwargs["travel_params"] = _TravelParams(max_distance=0.5)
 
-        cmd_id = nav_client.navigate_to(waypoint_id, **nav_kwargs)
+        # navigate_to signature changed in SDK >= 3.3:
+        #   < 3.3  : navigate_to(waypoint_id, travel_params=...)
+        #   >= 3.3 : navigate_to(waypoint_id, cmd_duration, travel_params=...)
+        # Probe the signature at runtime and call accordingly.
+        import inspect
+        sig = inspect.signature(nav_client.navigate_to)
+        params = list(sig.parameters.keys())
+        if "cmd_duration" in params:
+            # Newer SDK — cmd_duration is required (seconds robot will attempt nav)
+            cmd_id = nav_client.navigate_to(
+                waypoint_id,
+                cmd_duration=timeout_sec,
+                **nav_kwargs
+            )
+        else:
+            cmd_id = nav_client.navigate_to(waypoint_id, **nav_kwargs)
 
         # Poll until complete or timeout
         start = time.time()
@@ -217,7 +327,7 @@ def navigate(
             feedback = nav_client.navigation_feedback(cmd_id)
             status = feedback.status
             if status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
-                return SkillResult(True, skill, f"REached waypoint '{waypoint_id}'",
+                return SkillResult(True, skill, f"Reached waypoint '{waypoint_id}'",
                                    {"waypoint_id": waypoint_id})
             if status in (
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
