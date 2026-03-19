@@ -87,28 +87,6 @@ class SkillResult:
     data:           Dict[str, Any] = field(default_factory = dict)
     mock:           bool = False
 
-# ── Perception singleton ──────────────────────────────────────────────────────
-# PerceptionModule is expensive to construct (loads BertModel + YOLOv8).
-# A single module-level instance is shared across all locate() calls for the
-# lifetime of a live trial session. The embedder can optionally be pre-loaded
-# by Phase1Interpreter and passed in on first use to avoid a third load.
-
-_perception: Optional["PerceptionModule"] = None  # type: ignore[name-defined]
-
-def _get_perception(embedder=None):
-    """Return the module-level PerceptionModule singleton, creating it if needed.
-
-    Pass embedder on the first call to share the SentenceTransformer instance
-    that was already loaded by Phase1Interpreter, avoiding a redundant model load.
-    Subsequent calls return the cached instance regardless of the embedder arg.
-    """
-    global _perception
-    if _perception is None:
-        from perception import PerceptionModule
-        _perception = PerceptionModule(embedder=embedder)
-    return _perception
-
-
 # ── SPOT robot singleton ──────────────────────────────────────────────────────
 class SpotRobot:
     """
@@ -216,16 +194,22 @@ def navigate(
     try:
         nav_client = robot.graph_nav_client
 
-        # Resolve human-readable name to GraphNav UUID via WAYPOINT_MAP.
-        # Falls back to the raw string if not found (allows UUID passthrough).
-        resolved_id = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
-        if resolved_id != waypoint_id:
-            print(f"[spot] Resolved '{waypoint_id}' -> '{resolved_id}'")
+        # Upload graph if not already uploaded (assumes map is pre-recorded)
+        # In practice, load the map once at startup via nav_client.upload_graph(...)
 
-        cmd_id = nav_client.navigate_to(
-            resolved_id,
-            travel_params = nav_pb2.TravelParams(max_distance = 0.5)
+        # TravelParams moved between SDK versions:
+        #   < 3.3  : bosdyn.api.graph_nav.nav_pb2.TravelParams
+        #   >= 3.3 : bosdyn.api.graph_nav.graph_nav_pb2.TravelParams
+        # Probe both; fall back to no travel_params if neither has it.
+        _TravelParams = (
+            getattr(nav_pb2, "TravelParams", None)
+            or getattr(graph_nav_pb2, "TravelParams", None)
         )
+        nav_kwargs = {}
+        if _TravelParams is not None:
+            nav_kwargs["travel_params"] = _TravelParams(max_distance=0.5)
+
+        cmd_id = nav_client.navigate_to(waypoint_id, **nav_kwargs)
 
         # Poll until complete or timeout
         start = time.time()
@@ -233,12 +217,12 @@ def navigate(
             feedback = nav_client.navigation_feedback(cmd_id)
             status = feedback.status
             if status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
-                return SkillResult(True, skill, f"Reached waypoint '{waypoint_id}'",
-                                   {"waypoint_id": waypoint_id, "resolved_id": resolved_id})
+                return SkillResult(True, skill, f"REached waypoint '{waypoint_id}'",
+                                   {"waypoint_id": waypoint_id})
             if status in (
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
-                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERRIDDEN,
+                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERIDDEN,
             ):
                 return SkillResult(False, skill,
                                    f"Navigation failed (status = {status})",
@@ -305,9 +289,9 @@ def locate(
                             "bbox": [100, 150, 200, 250],
                             "confidence": 0.85}, mock = True)
     try:
-        # Use module-level perception singleton — avoids re-loading BertModel
-        # on every locate() call during a live trial.
-        perc = _get_perception()
+        # Use perception module to get live detections
+        from perception import PerceptionModule, DetectedObject
+        perc = PerceptionModule()
         scene = perc.get_scene_objects()
 
         match = next((o for o in scene if o.label.lower() == object_label.lower()), None)
