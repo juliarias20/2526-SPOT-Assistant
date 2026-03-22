@@ -40,9 +40,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import argparse
+
 from interpret import Phase1Interpreter
 from executor import TaskExecutor, ExecutionResult
 from spot_skills import SpotRobot, _get_perception
+from run import LiveFeedThread
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 LOG_FILE = Path("data/live_trials.jsonl")
@@ -527,6 +530,30 @@ def print_report(records: List[Dict], m: Dict, run_id: str) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # ── CLI arguments ─────────────────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="SPOT Live Trial Runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python live_trials.py                          # live trials, no feed
+  python live_trials.py --live-feed              # with local YOLO feed window
+  python live_trials.py --live-feed \
+      --use-compute-server                       # with NCB server feed
+        """,
+    )
+    parser.add_argument("--live-feed", action="store_true",
+                        help="Show live camera feed with YOLO bounding boxes during trials")
+    parser.add_argument("--use-compute-server", action="store_true",
+                        help="Route feed detections through object_detection/network_compute_server.py")
+    parser.add_argument("--server", default="fetch-server",
+                        help="NCB server service name (default: fetch-server)")
+    parser.add_argument("--model", default="yolov8n",
+                        help="NCB model name (default: yolov8n)")
+    parser.add_argument("--camera", default="frontleft_fisheye_image",
+                        help="Camera source for live feed (default: frontleft_fisheye_image)")
+    args = parser.parse_args()
+
     run_id  = datetime.now(timezone.utc).strftime("live_%Y%m%d_%H%M%S")
     records: List[Dict] = []
 
@@ -535,13 +562,22 @@ def main() -> None:
     print(f"  Run ID : {run_id}")
     print(f"  Trials : {len(LIVE_TRIALS)}")
     print(f"  Log    : {LOG_FILE}")
+    if args.live_feed:
+        feed_mode = f"compute-server ({args.server}/{args.model})" \
+            if args.use_compute_server else "local YOLO"
+        print(f"  Feed   : {feed_mode}")
     print("═" * 62)
     print("\n  Type 'n' at any ready prompt to exit and save completed trials.")
     print("  Ctrl+C also exits safely and saves.\n")
 
     # ── Graceful Ctrl+C handler ───────────────────────────────────────────────
+    feed_thread = None  # defined here so _handle_interrupt can reference it
+
     def _handle_interrupt(sig, frame):
         print("\n\n  [!] Interrupted. Saving completed trials...")
+        if feed_thread and feed_thread.is_alive():
+            feed_thread.stop()
+            feed_thread.join(timeout=2)
         _finalize(records, run_id)
         sys.exit(0)
     signal.signal(signal.SIGINT, _handle_interrupt)
@@ -559,6 +595,20 @@ def main() -> None:
     if robot.connected:
         _get_perception(embedder=interpreter.embedder)   # warm the singleton
         robot._debug_camera_snapshot()
+
+    # ── Start live feed thread ────────────────────────────────────────────────
+    if args.live_feed and robot.connected:
+        feed_thread = LiveFeedThread(
+            robot=robot,
+            use_compute_server=args.use_compute_server,
+            server_name=args.server,
+            model_name=args.model,
+            camera_source=args.camera,
+        )
+        feed_thread.start()
+        print(f"  [feed] Live feed started — press 'q' in the window to close it.\n")
+    elif args.live_feed and not robot.connected:
+        print("  ⚠  --live-feed requested but SPOT not connected — feed skipped.\n")
 
     try:
         for i, trial in enumerate(LIVE_TRIALS, 1):
@@ -587,6 +637,9 @@ def main() -> None:
             print(f"  [saved] {trial['id']} logged to {LOG_FILE}")
 
     finally:
+        if feed_thread and feed_thread.is_alive():
+            feed_thread.stop()
+            feed_thread.join(timeout=2)
         robot.disconnect()
         _finalize(records, run_id)
 
