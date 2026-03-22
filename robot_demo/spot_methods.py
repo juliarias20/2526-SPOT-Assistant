@@ -41,6 +41,12 @@ from bosdyn.client.network_compute_bridge_client import (ExternalServerError,
                                                          NetworkComputeBridgeClient)
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
 from bosdyn.client.util import add_base_arguments, authenticate, setup_logging
+from bosdyn.client.robot_state import RobotStateClient
+
+kImageSources = [
+    'frontleft_fisheye_image', 'frontright_fisheye_image', 'left_fisheye_image',
+    'right_fisheye_image', 'back_fisheye_image'
+]
 
 def power_on(robot):
     try:
@@ -65,7 +71,13 @@ def power_off(robot):
     except Exception as e:
         print("Error while powering off SPOT " + str(e))
 
-def initialize_SPOT():
+def stand(robot):
+    robot.logger.info('Sending "stand" command to SPOT')
+    command_client = robot.ensure_client(RobotCommandClient.default_service_name)
+    blocking_stand(command_client, timeout_sec = 10)
+    robot.logger.info('SPOT is now standing.')
+
+"""def intialize_SPOT():
     env_path = Path(__file__).resolve().parent / ".env"
     load_dotenv(dotenv_path=env_path)
 
@@ -76,7 +88,7 @@ def initialize_SPOT():
     if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
         raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
 
-    sdk = bosdyn.client.create_standard_sdk("InitialDemoClient")
+    sdk = bosdyn.client.create_standard_sdk("RobotDemoClient")
     robot = sdk.create_robot(SPOT_IP)
 
     robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
@@ -86,11 +98,76 @@ def initialize_SPOT():
     lease_client.acquire()
     lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
 
-def stand(robot):
-    robot.logger.info('Sending "stand" command to SPOT')
+    sdk.register_service_client(NetworkComputeBridgeClient)
+
+    network_compute_client = robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
+    robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
     command_client = robot.ensure_client(RobotCommandClient.default_service_name)
-    blocking_stand(command_client, timeout_sec = 10)
-    robot.logger.info('SPOT is now standing.')
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    manipulation_api_client = robot.ensure_client(ManipulationApiClient.default_service_name)
+
+    return sdk, robot, network_compute_client, robot_state_client, command_client, lease_client, manipulation_api_client
+"""
+def run_model(options, kImageSources):
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
+    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
+    SPOT_IP = os.getenv("SPOT_IP")
+
+    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
+        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
+
+    sdk = bosdyn.client.create_standard_sdk("ModelTestClient")
+    robot = sdk.create_robot(SPOT_IP)
+
+    robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
+    robot.time_sync.wait_for_sync()
+
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    lease_client.acquire()
+    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
+
+    network_compute_client = robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
+    robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
+    command_client = robot.ensure_client(RobotCommandClient.default_service_name)
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    manipulation_api_client = robot.ensure_client(ManipulationApiClient.default_service_name)
+    
+    with bosdyn.client.lease.LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True):
+            # Store the position of the hand at the last toy drop point.
+            vision_tform_hand_at_drop = None
+
+            while True:
+                holding_toy = False
+                while not holding_toy:
+                    # Capture an image and run ML on it.
+                    object, image, vision_tform_object = get_img_find_obj(
+                        network_compute_client, options.ml_service, options.model,
+                        options.confidence_object, kImageSources, 'x-block')
+
+                    if object is None:
+                        # Didn't find anything, keep searching.
+                        continue
+
+                    # If we have already dropped the toy off, make sure it has moved a sufficient amount before
+                    # picking it up again
+                    if vision_tform_hand_at_drop is not None and pose_dist(
+                            vision_tform_hand_at_drop, vision_tform_object) < 0.5:
+                        print('Found object, but it hasn\'t moved.  Waiting...')
+                        time.sleep(1)
+                        continue
+
+                    print('Found object...')
+                    
+                    # The ML result is a bounding box.  Find the center.
+                    (center_px_x, center_px_y) = find_center_px(object.image_properties.coordinates)
+
+                    walk_to_obj(center_px_x, center_px_y, robot, options, image, manipulation_api_client)
+
+                    grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, command_client)
+    
 
 def get_img_find_obj(network_compute_client, server, model, confidence, image_sources, label):
     for source in image_sources:
@@ -216,11 +293,158 @@ def find_center_px(polygon):
     print(f"x: {x}, y: {y}")
     return (x, y)
 
-def grasp_obj(center_px_x, center_px_y):
+def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, command_client):
+    # Request Pick Up on that pixel.
+    pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
+    print(pick_vec)
+    grasp = manipulation_api_pb2.PickObjectInImage(
+        pixel_xy=pick_vec,
+        transforms_snapshot_for_camera=image.shot.transforms_snapshot,
+        frame_name_image_sensor=image.shot.frame_name_image_sensor,
+        camera_model=image.source.pinhole)
 
+    # We can specify where in the gripper we want to grasp. About halfway is generally good for
+    # small objects like this. For a bigger object like a shoe, 0 is better (use the entire
+    # gripper)
+    grasp.grasp_params.grasp_palm_to_fingertip = 0.5
 
-def walk_to_obj():
+    # Tell the grasping system that we want a top-down grasp.
 
-if __name__ == '__main__':
-    if not main():
-        sys.exit(1)
+    # Add a constraint that requests that the x-axis of the gripper is pointing in the
+    # negative-z direction in the vision frame.
+
+    # The axis on the gripper is the x-axis.
+    axis_on_gripper_ewrt_gripper = geometry_pb2.Vec3(x=1, y=0, z=0)
+
+    # The axis in the vision frame is the negative z-axis
+    axis_to_align_with_ewrt_vision = geometry_pb2.Vec3(x=0, y=0, z=-1)
+
+    # Add the vector constraint to our proto.
+    constraint = grasp.grasp_params.allowable_orientation.add()
+    constraint.vector_alignment_with_tolerance.axis_on_gripper_ewrt_gripper.CopyFrom(
+        axis_on_gripper_ewrt_gripper)
+    constraint.vector_alignment_with_tolerance.axis_to_align_with_ewrt_frame.CopyFrom(
+        axis_to_align_with_ewrt_vision)
+
+    # We'll take anything within about 15 degrees for top-down or horizontal grasps.
+    constraint.vector_alignment_with_tolerance.threshold_radians = 0.25
+
+    # Specify the frame we're using.
+    grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
+
+    # Build the proto
+    grasp_request = manipulation_api_pb2.ManipulationApiRequest(
+        pick_object_in_image=grasp)
+
+    # Send the request
+    print('Sending grasp request...')
+    cmd_response = manipulation_api_client.manipulation_api_command(
+        manipulation_api_request=grasp_request)
+
+    # Wait for the grasp to finish
+    grasp_done = False
+    failed = False
+    time_start = time.time()
+    while not grasp_done:
+        feedback_request = manipulation_api_pb2.ManipulationApiFeedbackRequest(
+            manipulation_cmd_id=cmd_response.manipulation_cmd_id)
+
+        # Send a request for feedback
+        response = manipulation_api_client.manipulation_api_feedback_command(
+            manipulation_api_feedback_request=feedback_request)
+
+        current_state = response.current_state
+        current_time = time.time() - time_start
+        print(
+            'Current state ({time:.1f} sec): {state}'.format(
+                time=current_time,
+                state=manipulation_api_pb2.ManipulationFeedbackState.Name(
+                    current_state)), end='                \r')
+        sys.stdout.flush()
+
+        failed_states = [
+            manipulation_api_pb2.MANIP_STATE_GRASP_FAILED,
+            manipulation_api_pb2.MANIP_STATE_GRASP_PLANNING_NO_SOLUTION,
+            manipulation_api_pb2.MANIP_STATE_GRASP_FAILED_TO_RAYCAST_INTO_MAP,
+            manipulation_api_pb2.MANIP_STATE_GRASP_PLANNING_WAITING_DATA_AT_EDGE
+        ]
+        failed = current_state in failed_states
+        grasp_done = current_state == manipulation_api_pb2.MANIP_STATE_GRASP_SUCCEEDED or failed
+
+        time.sleep(0.1)
+
+    holding_toy = not failed
+
+    # Move the arm to a carry position.
+    print('')
+    print('Grasp finished.')
+    carry_cmd = RobotCommandBuilder.arm_carry_command()
+    command_client.robot_command(carry_cmd)
+
+    # Wait for the carry command to finish
+    time.sleep(0.75)
+        
+def walk_to_obj(center_px_x, center_px_y, robot, config, image, manipulation_api_client):
+    robot.logger.info("Walking to object at location (%s, %s)", center_px_x, center_px_y)
+
+    walk_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
+    # Optionally populate the offset distance parameter.
+    if config.distance is None:
+        offset_distance = None
+    else:
+        offset_distance = wrappers_pb2.FloatValue(value=config.distance)
+
+    # Build the proto
+    walk_to = manipulation_api_pb2.WalkToObjectInImage(
+        pixel_xy=walk_vec, transforms_snapshot_for_camera=image.shot.transforms_snapshot,
+        frame_name_image_sensor=image.shot.frame_name_image_sensor,
+        camera_model=image.source.pinhole, offset_distance=offset_distance)
+
+    # Ask the robot to walk up to the object
+    walk_to_request = manipulation_api_pb2.ManipulationApiRequest(
+        walk_to_object_in_image=walk_to)
+
+    # Send the request
+    cmd_response = manipulation_api_client.manipulation_api_command(
+        manipulation_api_request=walk_to_request)
+
+    # Get feedback from the robot
+    while True:
+        time.sleep(0.25)
+        feedback_request = manipulation_api_pb2.ManipulationApiFeedbackRequest(
+            manipulation_cmd_id=cmd_response.manipulation_cmd_id)
+
+        # Send the request
+        response = manipulation_api_client.manipulation_api_feedback_command(
+            manipulation_api_feedback_request=feedback_request)
+
+        print('Current state: ',
+            manipulation_api_pb2.ManipulationFeedbackState.Name(response.current_state))
+
+        if response.current_state == manipulation_api_pb2.MANIP_STATE_DONE:
+            break
+
+    robot.logger.info('Arrived at object.')
+
+def main(argv):
+    """TEST PROGRAM FOR METHODS"""
+    parser = argparse.ArgumentParser()
+    bosdyn.client.util.add_base_arguments(parser)
+    parser.add_argument('-s', '--ml-service',
+                        help='Service name of external machine learning server.', required=True)
+    parser.add_argument('-m', '--model', help='Model name running on the external server.',
+                        required=True)
+    parser.add_argument('-p', '--person-model',
+                        help='Person detection model name running on the external server.')
+    parser.add_argument('-c', '--confidence-object',
+                        help='Minimum confidence to return an object for the object (0.0 to 1.0)',
+                        default=0.5, type=float)
+    parser.add_argument('-e', '--confidence-person',
+                        help='Minimum confidence for person detection (0.0 to 1.0)', default=0.6,
+                        type=float)
+    parser.add_argument('-d', '--distance', help='Distance from object to walk to (meters).',
+                        default=None, type=arg_float)
+    options = parser.parse_args(argv)
+
+    run_model(options, kImageSources)
+
