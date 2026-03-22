@@ -1,0 +1,226 @@
+"""
+OBJECTIVE: Organizes a list of methods for SPOT to utilize upon intialization.
+
+Methods:
+    1. power_on
+    2. power_off
+    3. intialize_SPOT
+    4. stand
+    5. grasp
+    6. Get image + bounding box (to use model)
+    7. find center (for grasp)
+
+** more implementations ** 
+FETCH MODEL METHODS
+    - get image + find center for arm control
+    - grasp object
+"""
+import argparse
+import sys
+import time
+import os
+import cv2
+import numpy as np
+import math
+from dotenv import load_dotenv
+from pathlib import Path
+
+from bosdyn import geometry
+import bosdyn.client
+import bosdyn.client.util
+from bosdyn.api import (basic_command_pb2, image_pb2, geometry_pb2, manipulation_api_pb2, network_compute_bridge_pb2)
+from bosdyn.api.manipulation_api_pb2 import (ManipulationApiFeedbackRequest, ManipulationAPIRequest, WalkToObjectInImage)
+from google.protobuf import wrappers_pb2
+
+from bosdyn.client import create_standard_sdk, frame_helpers
+from bosdyn.client.door import DoorClient
+from bosdyn.client.image import ImageClient
+from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
+from bosdyn.client.manipulation_api_client import ManipulationApiClient
+from bosdyn.client.network_compute_bridge_client import (ExternalServerError,
+                                                         NetworkComputeBridgeClient)
+from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
+from bosdyn.client.util import add_base_arguments, authenticate, setup_logging
+
+def power_on(robot):
+    try:
+        robot.logger.info("Powering on SPOT...")
+        robot.power_on(timeout_sec = 20)
+
+        if robot.is_powered_on():
+            print("SPOT is already powered on.")
+        robot.logger.info("SPOT is powered on.")
+
+    except Exception as e:
+        print("Error while powering on SPOT: " + str(e))
+
+def power_off(robot):
+    try:
+        robot.logger.info("Powering off SPOT...")
+        robot.power_off(cut_immediately=False, timeout_sec = 20)
+
+        if robot.is_powered_on():
+            print("SPOT power off failed.")
+        robot.logger.info("SPOT safely powered off.")
+    except Exception as e:
+        print("Error while powering off SPOT " + str(e))
+
+def initialize_SPOT():
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
+    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
+    SPOT_IP = os.getenv("SPOT_IP")
+
+    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
+        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
+
+    sdk = bosdyn.client.create_standard_sdk("InitialDemoClient")
+    robot = sdk.create_robot(SPOT_IP)
+
+    robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
+    robot.time_sync.wait_for_sync()
+
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    lease_client.acquire()
+    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
+
+def stand(robot):
+    robot.logger.info('Sending "stand" command to SPOT')
+    command_client = robot.ensure_client(RobotCommandClient.default_service_name)
+    blocking_stand(command_client, timeout_sec = 10)
+    robot.logger.info('SPOT is now standing.')
+
+def get_img_find_obj(network_compute_client, server, model, confidence, image_sources, label):
+    for source in image_sources:
+        # Build a network compute request for this image source.
+        image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
+            image_source=source)
+
+        # Input data:
+        #   model name
+        #   minimum confidence (between 0 and 1)
+        #   if we should automatically rotate the image
+        input_data = network_compute_bridge_pb2.NetworkComputeInputData(
+            image_source_and_service=image_source_and_service, model_name=model,
+            min_confidence=confidence, rotate_image=network_compute_bridge_pb2.
+            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL)
+
+        # Server data: the service name
+        server_data = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
+            service_name=server)
+
+        # Pack and send the request.
+        process_img_req = network_compute_bridge_pb2.NetworkComputeRequest(
+            input_data=input_data, server_config=server_data)
+
+        try:
+            resp = network_compute_client.network_compute_bridge_command(process_img_req)
+        except ExternalServerError:
+            # This sometimes happens if the NCB is unreachable due to intermittent wifi failures.
+            print('Error connecting to network compute bridge. This may be temporary.')
+            return None, None, None
+
+        best_obj = None
+        highest_conf = 0.0
+        best_vision_tform_obj = None
+
+        img = get_bounding_box_image(resp)
+        image_full = resp.image_response
+
+        # Show the image
+        cv2.imshow("Fetch", img)
+        cv2.waitKey(15)
+
+        if len(resp.object_in_image) > 0:
+            for obj in resp.object_in_image:
+                # Get the label
+                obj_label = obj.name.split('_label_')[-1]
+                if obj_label != label:
+                    continue
+                conf_msg = wrappers_pb2.FloatValue()
+                obj.additional_properties.Unpack(conf_msg)
+                conf = conf_msg.value
+
+                try:
+                    vision_tform_obj = frame_helpers.get_a_tform_b(
+                        obj.transforms_snapshot, frame_helpers.VISION_FRAME_NAME,
+                        obj.image_properties.frame_name_image_coordinates)
+                except bosdyn.client.frame_helpers.ValidateFrameTreeError:
+                    # No depth data available.
+                    vision_tform_obj = None
+
+                if conf > highest_conf and vision_tform_obj is not None:
+                    highest_conf = conf
+                    best_obj = obj
+                    best_vision_tform_obj = vision_tform_obj
+
+        if best_obj is not None:
+            return best_obj, image_full, best_vision_tform_obj
+
+    return None, None, None
+
+def get_bounding_box_image(response):
+    dtype = np.uint8
+    img = np.fromstring(response.image_response.shot.image.data, dtype=dtype)
+    if response.image_response.shot.image.format == image_pb2.Image.FORMAT_RAW:
+        img = img.reshape(response.image_response.shot.image.rows,
+                          response.image_response.shot.image.cols)
+    else:
+        img = cv2.imdecode(img, -1)
+
+    # Convert to BGR so we can draw colors
+    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    # Draw bounding boxes in the image for all the detections.
+    for obj in response.object_in_image:
+        conf_msg = wrappers_pb2.FloatValue()
+        obj.additional_properties.Unpack(conf_msg)
+        confidence = conf_msg.value
+
+        polygon = []
+        min_x = float('inf')
+        min_y = float('inf')
+        for v in obj.image_properties.coordinates.vertexes:
+            polygon.append([v.x, v.y])
+            min_x = min(min_x, v.x)
+            min_y = min(min_y, v.y)
+
+        polygon = np.array(polygon, np.int32)
+        polygon = polygon.reshape((-1, 1, 2))
+        cv2.polylines(img, [polygon], True, (0, 255, 0), 2)
+
+        caption = "{} {:.3f}".format(obj.name, confidence)
+        cv2.putText(img, caption, (int(min_x), int(min_y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0, 255, 0), 2)
+
+    return img
+
+def find_center_px(polygon):
+    min_x = math.inf
+    min_y = math.inf
+    max_x = -math.inf
+    max_y = -math.inf
+    for vert in polygon.vertexes:
+        if vert.x < min_x:
+            min_x = vert.x
+        if vert.y < min_y:
+            min_y = vert.y
+        if vert.x > max_x:
+            max_x = vert.x
+        if vert.y > max_y:
+            max_y = vert.y
+    x = math.fabs(max_x - min_x) / 2.0 + min_x
+    y = math.fabs(max_y - min_y) / 2.0 + min_y
+    print(f"x: {x}, y: {y}")
+    return (x, y)
+
+def grasp_obj(center_px_x, center_px_y):
+
+
+def walk_to_obj():
+
+if __name__ == '__main__':
+    if not main():
+        sys.exit(1)
