@@ -41,6 +41,7 @@ from bosdyn.client.network_compute_bridge_client import (ExternalServerError,
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient, blocking_stand
 from bosdyn.client.util import add_base_arguments, authenticate, setup_logging
 from bosdyn.client.robot_state import RobotStateClient
+from bosdyn.client.frame_helpers import VISION_FRAME_NAME, get_vision_tform_body, math_helpers
 
 kImageSources = [
     'frontleft_fisheye_image', 'frontright_fisheye_image', 'left_fisheye_image',
@@ -122,7 +123,7 @@ def run_model(options, kImageSources, robot):
                     walk_to_obj(center_px_x, center_px_y, robot, options, image, manipulation_api_client)
 
                     #Once the robot has reached the target, use the coordinates to grasp the object
-                    grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, command_client)
+                    grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, robot_state_client, command_client)
     
 def pose_dist(pose1, pose2):
     diff_vec = [pose1.x - pose2.x, pose1.y - pose2.y, pose1.z - pose2.z]
@@ -252,7 +253,7 @@ def find_center_px(polygon):
     print(f"x: {x}, y: {y}")
     return (x, y)
 
-def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, command_client):
+def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, robot_state_client, command_client):
     # Request Pick Up on that pixel.
     pick_vec = geometry_pb2.Vec2(x=center_px_x, y=center_px_y)
     print(pick_vec)
@@ -261,7 +262,8 @@ def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api
         transforms_snapshot_for_camera=image.shot.transforms_snapshot,
         frame_name_image_sensor=image.shot.frame_name_image_sensor,
         camera_model=image.source.pinhole)
-
+    
+    """
     # We can specify where in the gripper we want to grasp. About halfway is generally good for
     # small objects like this. For a bigger object like a shoe, 0 is better (use the entire
     # gripper)
@@ -290,6 +292,9 @@ def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api
 
     # Specify the frame we're using.
     grasp.grasp_params.grasp_params_frame_name = frame_helpers.VISION_FRAME_NAME
+    """
+    # Optionally add a grasp constraint.  This lets you tell the robot you only want top-down grasps or side-on grasps.
+    add_grasp_constraint(options, grasp, robot_state_client)
 
     # Build the proto
     grasp_request = manipulation_api_pb2.ManipulationApiRequest(
@@ -342,7 +347,56 @@ def grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api
 
     # Wait for the carry command to finish
     time.sleep(0.75)
-        
+
+def add_grasp_constraint(config, grasp, robot_state_client):
+    # There are 3 types of constraints:
+    #   1. Vector alignment
+    #   2. Full rotation
+    #   3. Squeeze grasp
+    #
+    # You can specify more than one if you want and they will be OR'ed together.
+
+    # For these options, we'll use a vector alignment constraint.
+    use_vector_constraint = config.force_top_down_grasp or config.force_horizontal_grasp
+
+    # Specify the frame we're using.
+    grasp.grasp_params.grasp_params_frame_name = VISION_FRAME_NAME
+
+    if use_vector_constraint:
+        if config.force_top_down_grasp:
+            # Add a constraint that requests that the x-axis of the gripper is pointing in the
+            # negative-z direction in the vision frame.
+
+            # The axis on the gripper is the x-axis.
+            axis_on_gripper_ewrt_gripper = geometry_pb2.Vec3(x=1, y=0, z=0)
+
+            # The axis in the vision frame is the negative z-axis
+            axis_to_align_with_ewrt_vo = geometry_pb2.Vec3(x=0, y=0, z=-1)
+    if config.force_horizontal_grasp:
+            # Add a constraint that requests that the y-axis of the gripper is pointing in the
+            # positive-z direction in the vision frame.  That means that the gripper is constrained to be rolled 90 degrees and pointed at the horizon.
+
+            # The axis on the gripper is the y-axis.
+            axis_on_gripper_ewrt_gripper = geometry_pb2.Vec3(x=0, y=1, z=0)
+
+            # The axis in the vision frame is the positive z-axis
+            axis_to_align_with_ewrt_vo = geometry_pb2.Vec3(x=0, y=0, z=1)
+
+            # Add the vector constraint to our proto.
+            constraint = grasp.grasp_params.allowable_orientation.add()
+            constraint.vector_alignment_with_tolerance.axis_on_gripper_ewrt_gripper.CopyFrom(
+                axis_on_gripper_ewrt_gripper)
+            constraint.vector_alignment_with_tolerance.axis_to_align_with_ewrt_frame.CopyFrom(
+                axis_to_align_with_ewrt_vo)
+
+            # We'll take anything within about 10 degrees for top-down or horizontal grasps.
+            constraint.vector_alignment_with_tolerance.threshold_radians = 0.17
+    elif config.force_squeeze_grasp:
+        # Tell the robot to just squeeze on the ground at the given point.
+        constraint = grasp.grasp_params.allowable_orientation.add()
+        constraint.squeeze_grasp.SetInParent()
+
+
 def walk_to_obj(center_px_x, center_px_y, robot, config, image, manipulation_api_client):
     robot.logger.info("Walking to object at location (%s, %s)", center_px_x, center_px_y)
 
@@ -386,6 +440,7 @@ def walk_to_obj(center_px_x, center_px_y, robot, config, image, manipulation_api
     robot.logger.info('Arrived at object.')
 
 def main(argv):
+
     """TEST PROGRAM FOR METHODS"""
     parser = argparse.ArgumentParser()
     bosdyn.client.util.add_base_arguments(parser)
@@ -403,7 +458,30 @@ def main(argv):
                         type=float)
     parser.add_argument('-d', '--distance', help='Distance from object to walk to (meters).',
                         default=None, type=float)
+    parser.add_argument('-t', '--force-top-down-grasp',
+                        help='Force the robot to use a top-down grasp (vector_alignment demo)',
+                        action='store_true')
+    parser.add_argument('-f', '--force-horizontal-grasp',
+                        help='Force the robot to use a horizontal grasp (vector_alignment demo)',
+                        action='store_true')
+    parser.add_argument(
+        '-r', '--force-45-angle-grasp',
+        help='Force the robot to use a 45 degree angled down grasp (rotation_with_tolerance demo)',
+        action='store_true')
+    parser.add_argument('-s', '--force-squeeze-grasp',
+                        help='Force the robot to use a squeeze grasp', action='store_true')
+    
     options = parser.parse_args(argv)
+    num = 0
+    if options.force_top_down_grasp:
+        num += 1
+    if options.force_horizontal_grasp:
+        num += 1
+    if options.force_45_angle_grasp:
+        num += 1
+    if options.force_squeeze_grasp:
+        num += 1
+
 
     # Establish environmental variables to initialize SPOT robot
     env_path = Path(__file__).resolve().parent / ".env"
