@@ -368,4 +368,4 @@ Single BertModel load confirmed. All evaluation files verified correct.
 - [ ] Update thesis_draft.docx Phase I section to reflect fine-tuned BERT and 0.840 intent accuracy
 - [ ] Update classifier progression table in thesis to include fine-tuned BERT row
 - [ ] Revised draft due April 18
-- [ ] Defense due May 2
+- [ ] Defense due May 2 
