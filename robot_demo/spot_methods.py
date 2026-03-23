@@ -443,6 +443,7 @@ def main(argv):
 
     """TEST PROGRAM FOR METHODS"""
     parser = argparse.ArgumentParser()
+
     bosdyn.client.util.add_base_arguments(parser)
     parser.add_argument('-s', '--ml-service',
                         help='Service name of external machine learning server.', required=True)
@@ -481,7 +482,6 @@ def main(argv):
         num += 1
     if options.force_squeeze_grasp:
         num += 1
-
 
     # Establish environmental variables to initialize SPOT robot
     env_path = Path(__file__).resolve().parent / ".env"
