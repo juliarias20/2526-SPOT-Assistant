@@ -1,0 +1,8 @@
+{
+  "retrieve_object": 0,
+  "locate_object": 1,
+  "scan_environment": 2,
+  "navigate": 3,
+  "multi_step_retrieve": 4,
+  "multi_step_manipulation": 5
+}

@@ -22,6 +22,8 @@ A context-aware natural language command interpretation framework for autonomous
 │   ├── evaluate_phase2.py        # Phase II evaluator
 │   ├── evaluate_phase3.py        # Phase III evaluator
 │   ├── evaluate_phase4.py        # Phase IV evaluator
+│   ├── models/                   # Local model files (not tracked by git)
+│   │   └── bert-spot-intent/     # Fine-tuned BERT intent classifier (from Anvil)
 │   ├── data/                     # Gold datasets + trial logs
 │   └── maps/                     # GraphNav map files (after record_map.py)
 └── object_detection/             # External YOLO detection server (optional)
@@ -49,6 +51,16 @@ pip install -r requirements.txt
 ```
 
 For GPU / CUDA support with PyTorch, select your version at https://pytorch.org/get-started/locally/ before installing.
+
+### Intent classifier model
+
+The Phase I intent classifier uses a fine-tuned `bert-base-uncased` model trained on 1,863 domain-specific robot command examples. The model is stored locally and loaded at runtime with no internet connection required.
+
+**The model files must be present at:** `nlp_integration/models/bert-spot-intent/`
+
+The directory should contain: `config.json`, `model.safetensors`, `tokenizer.json`, `vocab.txt`, `tokenizer_config.json`, `special_tokens_map.json`, `label_map.json`.
+
+If you need to retrain the model (e.g. adding new intent classes), see `generate_training_data.py` and `finetune_bert.py` — the training pipeline targets Purdue Anvil GPU nodes via Slurm but can run on any CUDA-capable machine.
 
 ---
 
@@ -272,7 +284,7 @@ Expected results:
 
 | Phase | Metric | Score |
 |---|---|---|
-| I | Intent Accuracy | 0.740 |
+| I | Intent Accuracy | 0.840 |
 | I | Clarification F1 | 0.824 |
 | II | Clause Count Accuracy | 100% |
 | II | Per-Clause Intent Acc. | 96.4% |

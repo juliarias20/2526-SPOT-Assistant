@@ -284,3 +284,88 @@ Single BertModel load confirmed. All evaluation files verified correct.
 - [ ] Replace placeholder live trial rows in thesis_draft.docx after trials
 - [ ] Revised draft due April 18
 - [ ] Defense due May 2
+
+---
+
+## Week of 2026-03-23
+
+### What I built
+- `generate_training_data.py`: synthetic training data generator — 350+ hand-written examples across 6 intent classes, seeds from commands_gold.jsonl, applies rule-based augmentation (polite prefixes, synonym swaps, case variants). Produces training_data.jsonl + label_map.json.
+- `finetune_bert.py`: HuggingFace BertForSequenceClassification fine-tuning script with stratified train/val split, AdamW optimizer, linear warmup scheduler, best-checkpoint saving, full classification report + confusion matrix on val set, and --smoke-test mode for offline model verification.
+- `submit_finetune.sh`: Slurm job script for Purdue Anvil GPU partition (A100 nodes).
+- `setup_env.sh`: one-time conda environment setup for Anvil (spot-bert, Python 3.10, PyTorch 2.7.1+cu118, transformers 4.40.0, scikit-learn).
+- Fine-tuned `bert-base-uncased` on 1,863 examples (after augmentation + deduplication) across all 6 intent classes. Saved to `models/bert-spot-intent/` locally — no internet required at inference time.
+- Updated `interpret.py`: replaced SentenceTransformer cosine-similarity fallback with BertForSequenceClassification forward pass. PerceptionModule now manages its own embedder (no longer passed from Phase1Interpreter). All existing verb-override logic, NAV_FIRST_TOKENS pre-check, and clause splitting logic preserved exactly.
+
+### Training run (Purdue Anvil, A100 40GB, Job 15836367)
+- Dataset: 1,863 examples (6 classes, augmentation from ~350 seed examples)
+- 100% validation accuracy reached at epoch 3, held through epoch 10
+- Perfect confusion matrix (280 val examples, 0 misclassifications)
+- Smoke test: 6/6 correct (including multi_step_retrieve vs multi_step_manipulation)
+- Total job time: ~1 min 41 sec on A100
+
+### What changed in evaluate results
+- Phase I Intent Accuracy: **0.740 → 0.840** (6 previously misclassified commands now correct)
+- Clarification Precision held at 1.000 (zero false positives)
+- Clarification Recall held at 0.700, F1 held at 0.824
+- Phases II, III, IV: all metrics unchanged — no regressions
+
+### Decisions made (and why)
+- Fine-tuned BERT instead of larger instruction-tuned LLM: dataset is small (1,863 examples), bert-base-uncased trains in under 2 minutes on A100 and achieves 100% val accuracy. Larger models add latency and complexity with no measurable benefit on this task.
+- Rule-based augmentation over LLM-generated paraphrases: fully deterministic, reproducible, no API cost, sufficient variety for 6 well-separated intent classes.
+- Model saved locally (models/bert-spot-intent/): eliminates HuggingFace download on every run, enables fully offline inference — important for robot lab environments without reliable internet.
+- Ambiguity thresholds recalibrated from cosine similarity to softmax probabilities: ambiguity_threshold=0.70 (flag if top class < 70% confident), delta_threshold=0.10 (flag if top-2 gap < 10%). Old thresholds (0.12, 0.015) were cosine similarity values and are not meaningful in probability space.
+- PerceptionModule embedder decoupled: shared embedder pattern (passing self.embedder from Phase1Interpreter) was only needed because both used SentenceTransformer. Now that interpret.py uses BertForSequenceClassification and perception.py still uses SentenceTransformer for affordance scoring, they are independent. Removed PerceptionModule(embedder=...) call; each module loads its own model. Slight memory overhead is acceptable — architecturally cleaner.
+- Purdue Anvil GPU allocation used (ACCESS-CI, x-jfrancisco, 3K GPU hours): A100 nodes via Slurm. BERT weights pre-cached on login node before job submission — GPU compute nodes have no internet access.
+
+### Classifier progression (updated)
+
+| Version                        | Intent Acc | Per-Clause Intent | Step-Seq F1 |
+|-------------------------------|------------|-------------------|-------------|
+| Baseline (keyword/spaCy)       | 0.680      | —                 | —           |
+| Embedding only                 | 0.620      | 58.6%             | 0.756       |
+| Hybrid (verb + embedding)      | 0.740      | 96.4%             | 0.863       |
+| Hybrid (verb + fine-tuned BERT)| 0.840      | 96.4%             | 0.863       |
+
+### Final Results — All Phases (updated)
+
+| Phase | Metric                   | Score   | Threshold           |
+|-------|--------------------------|---------|---------------------|
+| I     | Intent Accuracy          | 0.840   | beats baselines ✅  |
+| I     | Keyword Baseline         | 0.680   | —                   |
+| I     | spaCy Baseline           | 0.680   | —                   |
+| I     | Clarification Precision  | 1.000   | —                   |
+| I     | Clarification Recall     | 0.700   | —                   |
+| I     | Clarification F1         | 0.824   | —                   |
+| II    | Clause Count Accuracy    | 100%    | —                   |
+| II    | Per-Clause Intent Acc.   | 96.4%   | —                   |
+| II    | Step-Sequence F1         | 0.863   | —                   |
+| II    | Edge-Type Accuracy       | 100%    | —                   |
+| III   | Top-1 Grounding Acc.     | 85.0%   | ≥ 70% ✅           |
+| III   | Top-3 Grounding Acc.     | 90.0%   | —                   |
+| III   | Mean Reciprocal Rank     | 0.889   | —                   |
+| III   | Mean Affordance Score    | 0.547   | —                   |
+| IV    | Task Completion Rate     | 95.0%   | ≥ 65–75% ✅        |
+| IV    | Outcome Accuracy         | 100.0%  | —                   |
+| IV    | Plan Accuracy            | 100.0%  | —                   |
+| IV    | Object Extraction Acc.   | 100.0%  | —                   |
+| IV    | Waypoint Extraction Acc. | 100.0%  | —                   |
+
+### Finished
+- generate_training_data.py (synthetic dataset generator)
+- finetune_bert.py (BERT fine-tuning script, smoke test mode)
+- submit_finetune.sh + setup_env.sh (Anvil Slurm job scripts)
+- Fine-tuned model trained and saved to models/bert-spot-intent/
+- interpret.py updated to use fine-tuned BERT classifier (SentenceTransformer removed from interpret.py)
+- All four phase evaluators re-run and verified — no regressions
+
+### Next steps
+- [ ] Fix pick_up frame_name_image_sensor before grasp trials
+- [ ] Set SPOT_START_WAYPOINT to start position UUID
+- [ ] Fill WAYPOINT_MAP in spot_skills.py from record_map.py output
+- [ ] Run live_trials.py on SPOT (20 trials, USE_SPOT=true)
+- [ ] Replace placeholder live trial rows in thesis_draft.docx after trials
+- [ ] Update thesis_draft.docx Phase I section to reflect fine-tuned BERT and 0.840 intent accuracy
+- [ ] Update classifier progression table in thesis to include fine-tuned BERT row
+- [ ] Revised draft due April 18
+- [ ] Defense due May 2

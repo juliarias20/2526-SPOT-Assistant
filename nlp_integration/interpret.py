@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from spacy.matcher import PhraseMatcher
 import spacy
-from sentence_transformers import SentenceTransformer, util
+import torch
+from transformers import BertTokenizerFast, BertForSequenceClassification
 from perception import PerceptionModule
 
 CONNECTORS = {"and", "then", "after", "before"}
@@ -34,24 +35,27 @@ class Phase1Interpreter:
     def __init__(
         self,
         intent_file: str = "models/intent_labels.json",
-        embedding_model: str = "all-MiniLM-L6-v2",
-        ambiguity_threshold: float = 0.12,
-        delta_threshold: float = 0.015,
+        bert_model_path: str = "models/bert-spot-intent",
+        ambiguity_threshold: float = 0.70,
+        delta_threshold: float = 0.10,
     ):
         self.nlp = spacy.load("en_core_web_sm")
-        self.embedder = SentenceTransformer(embedding_model)
         self.ambiguity_threshold = ambiguity_threshold
         self.delta_threshold = delta_threshold
-        self.perception = PerceptionModule(embedder=self.embedder)
+        self.perception = PerceptionModule()
+
+        # Load fine-tuned BERT classifier from local path (no internet needed)
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._tokenizer = BertTokenizerFast.from_pretrained(bert_model_path)
+        self._classifier = BertForSequenceClassification.from_pretrained(bert_model_path)
+        self._classifier.to(self._device)
+        self._classifier.eval()
+
+        # Build id->label map from model config
+        self._id2label = self._classifier.config.id2label  # {0: "retrieve_object", ...}
 
         with open(intent_file, "r", encoding="utf-8") as f:
             self.intent_labels: Dict[str, str] = json.load(f)
-
-        # Precompute embeddings for intent descriptions
-        self.intent_embs = {
-            k: self.embedder.encode(v, convert_to_tensor=True)
-            for k, v in self.intent_labels.items()
-        }
 
     def _init_clause_matcher(self):
         """
@@ -349,23 +353,39 @@ class Phase1Interpreter:
             if first_verb in PLACE_VERBS:
                 return IntentResult("multi_step_manipulation", 0.90, 0.10, 0.80, False, None)
 
-        # Fall through to embedding classifier for longer / ambiguous text
-        text_emb = self.embedder.encode(text, convert_to_tensor=True)
-        sims = {k: float(util.cos_sim(text_emb, v)) for k, v in self.intent_embs.items()}
-        ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
-        best_label, best_score = ranked[0]
-        second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-        delta = best_score - second_score
+        # Fall through to fine-tuned BERT classifier for longer / ambiguous text
+        inputs = self._tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=128,
+            padding=True,
+        )
+        inputs = {k: v.to(self._device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            logits = self._classifier(**inputs).logits
+
+        probs = torch.softmax(logits, dim=-1).squeeze()
+        ranked = torch.argsort(probs, descending=True)
+
+        best_id      = ranked[0].item()
+        second_id    = ranked[1].item()
+        best_score   = probs[best_id].item()
+        second_score = probs[second_id].item()
+        delta        = best_score - second_score
+
+        best_label = self._id2label[best_id]
 
         is_ambiguous = False
         reason = None
 
         if best_score < self.ambiguity_threshold:
             is_ambiguous = True
-            reason = f"Low confidence intent (score = {best_score: .2f})."
-        elif best_score < 0.25 and delta < self.delta_threshold:
+            reason = f"Low confidence intent (prob = {best_score:.2f})."
+        elif delta < self.delta_threshold:
             is_ambiguous = True
-            reason = f"Top intents too close (Δ = {delta: .2f})."
+            reason = f"Top intents too close (Δ = {delta:.2f})."
 
         return IntentResult(best_label, best_score, second_score, delta, is_ambiguous, reason)
     
