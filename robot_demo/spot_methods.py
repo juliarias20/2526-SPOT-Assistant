@@ -2,18 +2,17 @@
 OBJECTIVE: Organizes a list of methods for SPOT to utilize upon intialization.
 
 Methods:
-    1. power_on
-    2. power_off
-    3. intialize_SPOT
-    4. stand
-    5. grasp
-    6. Get image + bounding box (to use model)
-    7. find center (for grasp)
-
-** more implementations ** 
-FETCH MODEL METHODS
-    - get image + find center for arm control
-    - grasp object
+    1. power_on :: intializes motors and turns on SPOT 
+    2. power_off :: stops motors and safely shuts down SPOT
+    4. stand :: sends the stand command to SPOT
+    
+    5. run_model :: main method to test "FETCH" tutorial methods 
+    6. get_img_find_obj :: used to capture image and uses the model to find the object
+    5. get_bounding_box_image :: based on the image captured and the model analysis, create a bounding box for SPOT to estimate coordinates
+    6. find_center_px :: used to find the center of bounding box for grasp and motor control
+    7. grasp_obj :: uses arm control to grasp the object 
+    8. walk_to_obj :: allows SPOT to walk to object detected based on bounding box results
+    9. pose_dist :: calculates the relative distance between SPOT and the target object 
 """
 import argparse
 import sys
@@ -77,58 +76,13 @@ def stand(robot):
     blocking_stand(command_client, timeout_sec = 10)
     robot.logger.info('SPOT is now standing.')
 
-"""def intialize_SPOT():
-    env_path = Path(__file__).resolve().parent / ".env"
-    load_dotenv(dotenv_path=env_path)
-
-    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
-    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
-    SPOT_IP = os.getenv("SPOT_IP")
-
-    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
-        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
-
-    sdk = bosdyn.client.create_standard_sdk("RobotDemoClient")
-    robot = sdk.create_robot(SPOT_IP)
-
-    robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
-    robot.time_sync.wait_for_sync()
-
+def run_model(options, kImageSources, robot):    
+    # Use lease client to take motor control from tablet
     lease_client = robot.ensure_client(LeaseClient.default_service_name)
     lease_client.acquire()
     lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
 
-    sdk.register_service_client(NetworkComputeBridgeClient)
-
-    network_compute_client = robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
-    robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
-    command_client = robot.ensure_client(RobotCommandClient.default_service_name)
-    lease_client = robot.ensure_client(LeaseClient.default_service_name)
-    manipulation_api_client = robot.ensure_client(ManipulationApiClient.default_service_name)
-
-    return sdk, robot, network_compute_client, robot_state_client, command_client, lease_client, manipulation_api_client
-"""
-def run_model(options, kImageSources):
-    env_path = Path(__file__).resolve().parent / ".env"
-    load_dotenv(dotenv_path=env_path)
-
-    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
-    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
-    SPOT_IP = os.getenv("SPOT_IP")
-
-    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
-        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
-
-    sdk = bosdyn.client.create_standard_sdk("ModelTestClient")
-    robot = sdk.create_robot(SPOT_IP)
-
-    robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
-    robot.time_sync.wait_for_sync()
-
-    lease_client = robot.ensure_client(LeaseClient.default_service_name)
-    lease_client.acquire()
-    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
-
+    # Declare clients to be utilized for arm/robot manipulation, model analysis, and robot state
     network_compute_client = robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
     robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
     command_client = robot.ensure_client(RobotCommandClient.default_service_name)
@@ -163,11 +117,16 @@ def run_model(options, kImageSources):
                     
                     # The ML result is a bounding box.  Find the center.
                     (center_px_x, center_px_y) = find_center_px(object.image_properties.coordinates)
-
+                    
+                    # Once found, walk to object using the coordinates calculated.
                     walk_to_obj(center_px_x, center_px_y, robot, options, image, manipulation_api_client)
 
+                    #Once the robot has reached the target, use the coordinates to grasp the object
                     grasp_obj(center_px_x, center_px_y, options, image, object, manipulation_api_client, command_client)
     
+def pose_dist(pose1, pose2):
+    diff_vec = [pose1.x - pose2.x, pose1.y - pose2.y, pose1.z - pose2.z]
+    return np.linalg.norm(diff_vec)
 
 def get_img_find_obj(network_compute_client, server, model, confidence, image_sources, label):
     for source in image_sources:
@@ -443,8 +402,27 @@ def main(argv):
                         help='Minimum confidence for person detection (0.0 to 1.0)', default=0.6,
                         type=float)
     parser.add_argument('-d', '--distance', help='Distance from object to walk to (meters).',
-                        default=None, type=arg_float)
+                        default=None, type=float)
     options = parser.parse_args(argv)
 
-    run_model(options, kImageSources)
+    # Establish environmental variables to initialize SPOT robot
+    env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=env_path)
+
+    SPOT_USERNAME = os.getenv("SPOT_USERNAME")
+    SPOT_PASSWORD = os.getenv("SPOT_PASSWORD")
+    SPOT_IP = os.getenv("SPOT_IP")
+
+    if not all([SPOT_USERNAME, SPOT_PASSWORD, SPOT_IP]):
+        raise RuntimeError("Missing SPOT_USERNAME, SPOT_PASSWORD, or SPOT_IP environment variables.")
+ 
+    sdk = bosdyn.client.create_standard_sdk("ModelTestClient")
+    robot = sdk.create_robot(SPOT_IP)
+
+    robot.authenticate(SPOT_USERNAME, SPOT_PASSWORD)
+    robot.time_sync.wait_for_sync()
+
+    stand(robot)
+
+    run_model(options, kImageSources, robot)
 
