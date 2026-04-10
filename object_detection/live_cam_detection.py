@@ -11,68 +11,39 @@ from bosdyn.client import frame_helpers
 from bosdyn.api import network_compute_bridge_pb2, image_pb2
 from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
-def get_obj_and_img(network_compute_client, server, model, confidence, source):
-    # Build a network compute request for this image source.
-    image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
-        image_source=source)
+def get_obj_and_img(network_compute_client, server, model, confidence, sources):
+    for source in sources:
+        # Build a network compute request for this image source.
+        image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
+            image_source=source)
 
-    # Input data:
-    #   model name
-    #   minimum confidence (between 0 and 1)
-    #   if we should automatically rotate the image
-    input_data = network_compute_bridge_pb2.NetworkComputeInputData(
-        image_source_and_service=image_source_and_service, model_name=model,
-        min_confidence=confidence, rotate_image=network_compute_bridge_pb2.
-        NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL)
+        # Input data:
+        #   model name
+        #   minimum confidence (between 0 and 1)
+        #   if we should automatically rotate the image
+        input_data = network_compute_bridge_pb2.NetworkComputeInputData(
+            image_source_and_service=image_source_and_service, model_name=model,
+            min_confidence=confidence, rotate_image=network_compute_bridge_pb2.
+            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL)
 
-    # Server data: the service name
-    server_data = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
-        service_name=server)
+        # Server data: the service name
+        server_data = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
+            service_name=server)
 
-    # Pack and send the request.
-    process_img_req = network_compute_bridge_pb2.NetworkComputeRequest(
-        input_data=input_data, server_config=server_data)
+        # Pack and send the request.
+        process_img_req = network_compute_bridge_pb2.NetworkComputeRequest(
+            input_data=input_data, server_config=server_data)
 
-    resp = network_compute_client.network_compute_bridge_command(process_img_req)
+        resp = network_compute_client.network_compute_bridge_command(process_img_req)
+        
+        # Put bounding boxes in the image
+        img = get_bounding_box_image(resp)
 
-    best_obj = None
-    highest_conf = 0.0
-    best_vision_tform_obj = None
-
-    img = get_bounding_box_image(resp)
-    image_full = resp.image_response
-
-    # Show the image
-    cv2.imshow("Camera", img)
-    
-    # Wait for 15 milliseconds
-    cv2.waitKey(15)
-
-    if len(resp.object_in_image) > 0:
-        for obj in resp.object_in_image:
-            # Get the label
-            obj_label = obj.name.split('_label_')[-1]
-            conf_msg = wrappers_pb2.FloatValue()
-            obj.additional_properties.Unpack(conf_msg)
-            conf = conf_msg.value
-
-            try:
-                vision_tform_obj = frame_helpers.get_a_tform_b(
-                    obj.transforms_snapshot, frame_helpers.VISION_FRAME_NAME,
-                    obj.image_properties.frame_name_image_coordinates)
-            except bosdyn.client.frame_helpers.ValidateFrameTreeError:
-                # No depth data available.
-                vision_tform_obj = None
-
-            if conf > highest_conf and vision_tform_obj is not None:
-                highest_conf = conf
-                best_obj = obj
-                best_vision_tform_obj = vision_tform_obj
-
-    if best_obj is not None:
-        return best_obj, image_full, best_vision_tform_obj
-
-    return None, None, None
+        # Show the image
+        cv2.imshow(f"Camera: {source}", img)
+        
+        # Wait for 15 milliseconds
+        cv2.waitKey(15)
 
 def get_bounding_box_image(response):
     dtype = np.uint8
@@ -115,8 +86,8 @@ def main(argv):
     # ARGUMENTS
     parser = argparse.ArgumentParser()
     bosdyn.client.util.add_base_arguments(parser)
-    parser.add_argument('--image-source', help='Get image from source(s)',
-                        default='frontleft_fisheye_image')
+    parser.add_argument('-i', '--image-sources', help='Get image from source(s)',
+                        action='append')
     parser.add_argument('-s', '--ml-service',
                         help='Service name of external machine learning server.', required=True)
     parser.add_argument('-m', '--model', help='Model name running on the external server.',
@@ -126,10 +97,6 @@ def main(argv):
                         default=0.5, type=float)
     
     options = parser.parse_args(argv)
-    
-    # Create window for the live camera
-    cv2.namedWindow("Camera")
-    cv2.waitKey(500)
     
     # Register robot
     sdk = bosdyn.client.create_standard_sdk('SpotLiveDetectionClient')
@@ -144,7 +111,7 @@ def main(argv):
     # Main loop
     while True:
         get_obj_and_img(network_compute_client, options.ml_service, options.model, 
-                        options.confidence_object, options.image_source)
+                        options.confidence_object, options.image_sources)
         
 if __name__ == '__main__':
     if not main(sys.argv[1:]):
