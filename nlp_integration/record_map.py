@@ -36,9 +36,9 @@ from bosdyn.client.recording import GraphNavRecordingServiceClient
 from bosdyn.api.graph_nav import recording_pb2
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-SPOT_IP   = os.environ.get("SPOT_IP",   "192.168.80.3")
-SPOT_USER = os.environ.get("SPOT_USER", "user")
-SPOT_PASS = os.environ.get("SPOT_PASS", "password")
+SPOT_IP   = os.environ.get("SPOT_IP")
+SPOT_USER = os.environ.get("SPOT_USER")
+SPOT_PASS = os.environ.get("SPOT_PASS")
 
 
 def main(output_dir: str):
@@ -48,7 +48,7 @@ def main(output_dir: str):
     # ── Connect ────────────────────────────────────────────────────────────────
     sdk = bosdyn.client.create_standard_sdk("RecordMap")
     robot = sdk.create_robot(SPOT_IP)
-    bosdyn.client.util.authenticate(robot)
+    robot.authenticate(SPOT_USER, SPOT_PASS)
     robot.time_sync.wait_for_sync()
     print(f"[record] Connected to SPOT: {SPOT_IP}")
 
@@ -61,6 +61,7 @@ def main(output_dir: str):
     with LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True):
 
         # ── Clear any existing map on robot ────────────────────────────────────
+        recording.stop_recording()
         graph_nav.clear_graph()
         print("[record] Cleared existing GraphNav graph.")
 
@@ -68,9 +69,9 @@ def main(output_dir: str):
         response = recording.start_recording()
         # STATUS_OK = 0 in the recording proto; compare numerically to avoid
         # SDK version differences in how the enum constant is exposed
-        if response.status != 0:
-            print(f"[record] Failed to start recording: {response.status}")
-            return
+        # if response.status != 0:
+        #     print(f"[record] Failed to start recording: {response.status}")
+        #     return
         print("[record] Recording started. Walk SPOT to each location.")
         print("         Carry SPOT with the tablet or use keyboard teleoperation.\n")
 

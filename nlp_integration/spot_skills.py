@@ -129,11 +129,11 @@ MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
 # Human-readable waypoint name -> GraphNav UUID.
 # Populate this after running record_map.py — copy the printed WAYPOINT_MAP
 # dict here. Navigate() resolves names through this table before calling SDK.
-WAYPOINT_MAP: dict = {
-    # "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "table":   "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "kitchen": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "user":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+WAYPOINT_MAP: dict[str, str] = {
+    "desk": "grumpy-badger-YPi8A7FiWb2wIq7HkdS2Yw==",
+    "table": "yon-gecko-41pIuDv5rntuRxE5jJR9QA==",
+    "kitchen": "stated-raven-4VlAnYETdp6hMh.HUqISHw==",
+    "user": "kept-bobcat-kvOfmc7O6WYzoWf2q6z6Pw==",
 }
 
 # Starting waypoint for no-fiducial localization fallback.
