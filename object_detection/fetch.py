@@ -207,7 +207,7 @@ def main(argv):
                 # Capture an image and run ML on it.
                 object, image, vision_tform_object = get_obj_and_img(
                     network_compute_client, options.ml_service, options.model,
-                    options.confidence_object, kImageSources, 'x-block')
+                    options.confidence_object, kImageSources, 'bottle')
 
                 if object is None:
                     # Didn't find anything, keep searching.
@@ -230,21 +230,21 @@ def main(argv):
                 command_client.robot_command(stow_cmd)
 
                 # # Walk to the object.
-                # walk_rt_vision, heading_rt_vision = compute_stand_location_and_yaw(
-                #     vision_tform_object, robot_state_client, distance_margin=1.0)
+                walk_rt_vision, heading_rt_vision = compute_stand_location_and_yaw(
+                    vision_tform_object, robot_state_client, distance_margin=1.0)
 
-                # se2_pose = geometry_pb2.SE2Pose(
-                #     position=geometry_pb2.Vec2(x=walk_rt_vision[0], y=walk_rt_vision[1]),
-                #     angle=heading_rt_vision)
-                # move_cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
-                #     se2_pose, frame_name=frame_helpers.VISION_FRAME_NAME,
-                #     params=get_walking_params(0.5, 0.5))
-                # end_time = 5.0
-                # cmd_id = command_client.robot_command(command=move_cmd,
-                #                                       end_time_secs=time.time() + end_time)
+                se2_pose = geometry_pb2.SE2Pose(
+                    position=geometry_pb2.Vec2(x=walk_rt_vision[0], y=walk_rt_vision[1]),
+                    angle=heading_rt_vision)
+                move_cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
+                    se2_pose, frame_name=frame_helpers.VISION_FRAME_NAME,
+                    params=get_walking_params(0.5, 0.5))
+                end_time = 5.0
+                cmd_id = command_client.robot_command(command=move_cmd,
+                                                      end_time_secs=time.time() + end_time)
 
                 # # Wait until the robot reports that it is at the goal.
-                # block_for_trajectory_cmd(command_client, cmd_id, timeout_sec=5)
+                block_for_trajectory_cmd(command_client, cmd_id, timeout_sec=5)
 
                 # The ML result is a bounding box.  Find the center.
                 (center_px_x, center_px_y) = find_center_px(object.image_properties.coordinates)

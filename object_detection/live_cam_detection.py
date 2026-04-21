@@ -12,6 +12,7 @@ from bosdyn.api import network_compute_bridge_pb2, image_pb2
 from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
 def get_obj_and_img(network_compute_client, server, model, confidence, sources):
+    img_list = []
     for source in sources:
         # Build a network compute request for this image source.
         image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
@@ -38,6 +39,16 @@ def get_obj_and_img(network_compute_client, server, model, confidence, sources):
         
         # Put bounding boxes in the image
         img = get_bounding_box_image(resp)
+        
+        # Approximately rotate the image to level
+        if source[0:5] == "front":
+            img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+
+        elif source[0:5] == "right":
+            img = cv2.rotate(img, cv2.ROTATE_180)
+        cv2.putText(img, source, (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        img_list.append(img)
 
         # Show the image
         cv2.imshow(f"Camera: {source}", img)
