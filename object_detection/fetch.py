@@ -28,9 +28,8 @@ from bosdyn.client.robot_state import RobotStateClient
 
 kImageSources = [
     'frontleft_fisheye_image', 'frontright_fisheye_image', 'left_fisheye_image',
-    'right_fisheye_image', 'back_fisheye_image'
+    'right_fisheye_image', 'back_fisheye_image',
 ]
-
 
 def get_obj_and_img(network_compute_client, server, model, confidence, image_sources, label):
 
@@ -96,6 +95,7 @@ def get_obj_and_img(network_compute_client, server, model, confidence, image_sou
                         obj.image_properties.frame_name_image_coordinates)
                 except bosdyn.client.frame_helpers.ValidateFrameTreeError:
                     # No depth data available.
+                    print("No depth data available.")
                     vision_tform_obj = None
 
                 if conf > highest_conf and vision_tform_obj is not None:
@@ -119,7 +119,8 @@ def get_bounding_box_image(response):
         img = cv2.imdecode(img, -1)
 
     # Convert to BGR so we can draw colors
-    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if response.image_response.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
     # Draw bounding boxes in the image for all the detections.
     for obj in response.object_in_image:
@@ -215,11 +216,13 @@ def main(argv):
                 # Capture an image and run ML on it.
                 object, image, vision_tform_object = get_obj_and_img(
                     network_compute_client, options.ml_service, options.model,
-                    options.confidence_object, kImageSources, object)
+                    options.confidence_object, kImageSources, options.object_detect)
 
                 if object is None:
                     # Didn't find anything, keep searching.
                     continue
+
+                print(object)
 
                 # If we have already dropped the toy off, make sure it has moved a sufficient amount before
                 # picking it up again
@@ -510,7 +513,6 @@ def get_walking_params(max_linear_vel, max_rotation_vel):
     params = RobotCommandBuilder.mobility_params()
     params.vel_limit.CopyFrom(vel_limit)
     return params
-
 
 if __name__ == '__main__':
     if not main(sys.argv[1:]):

@@ -136,6 +136,8 @@ def process_thread(args, request_queue, response_queue):
         classes = []
         scores = []
         labels = detections[0].names
+        if type(labels) is list:
+            labels = {i:labels[i] for i in range(len(labels))}
         
         for det in detections:
             for i in range(len(det.boxes.cls)):
