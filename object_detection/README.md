@@ -1,6 +1,6 @@
 # Object Detection
 ## About
-- This module is to be used on its own for general object detection or with other 
+- This module is to be used on its own for general object detection or with other modules for autonomous assitant functions.
 
 ## Installation
 - Current working environment
@@ -32,6 +32,7 @@
     - The default name of the server is currently `fetch-server` but can be changed with the command above and the option `-n` or `--name`.
     - The model can be changed by changing the model name after the `-m`.
     - Additional cameras can be used by adding more `-i` arguments.
+    - `-o` is an optional argument that specifies object to be detected. It is only used by vocabulary based models.
 
 - To create new object detection models, use the notebook `YOLO_SPOT.ipynb`, open in Google Colab, and follow the directions there. 
     - Once you have downloaded the new model, make sure to create a directory under `/models` with the desired name for the model and put the `.pt` file there.
