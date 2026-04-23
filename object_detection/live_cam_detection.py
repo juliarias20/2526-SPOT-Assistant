@@ -3,7 +3,7 @@ import argparse
 
 import cv2
 import numpy as np
-from google.protobuf import wrappers_pb2
+from google.protobuf import wrappers_pb2, any_pb2
 
 import bosdyn.client
 import bosdyn.client.util
@@ -11,12 +11,17 @@ from bosdyn.client import frame_helpers
 from bosdyn.api import network_compute_bridge_pb2, image_pb2
 from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
-def get_obj_and_img(network_compute_client, server, model, confidence, sources):
+def get_obj_and_img(network_compute_client, server, model, confidence, sources, label):
     img_list = []
     for source in sources:
         # Build a network compute request for this image source.
         image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
             image_source=source)
+
+        # Pack object to detect
+        string_msg = wrappers_pb2.StringValue(value=label)
+        any_msg = any_pb2.Any()
+        any_msg.Pack(string_msg)
 
         # Input data:
         #   model name
@@ -25,7 +30,8 @@ def get_obj_and_img(network_compute_client, server, model, confidence, sources):
         input_data = network_compute_bridge_pb2.NetworkComputeInputData(
             image_source_and_service=image_source_and_service, model_name=model,
             min_confidence=confidence, rotate_image=network_compute_bridge_pb2.
-            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL)
+            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL,
+            other_data=any_msg)
 
         # Server data: the service name
         server_data = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
@@ -106,6 +112,8 @@ def main(argv):
     parser.add_argument('-c', '--confidence-object',
                         help='Minimum confidence to return an object for the detection (0.0 - 1.0)',
                         default=0.5, type=float)
+    parser.add_argument('-o', '--object_detect',
+                        help="Object to detect", default="")
     
     options = parser.parse_args(argv)
     
@@ -122,7 +130,7 @@ def main(argv):
     # Main loop
     while True:
         get_obj_and_img(network_compute_client, options.ml_service, options.model, 
-                        options.confidence_object, options.image_sources)
+                        options.confidence_object, options.image_sources, options.object_detect)
         
 if __name__ == '__main__':
     if not main(sys.argv[1:]):

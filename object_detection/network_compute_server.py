@@ -20,7 +20,7 @@ import cv2
 import grpc
 import numpy as np
 from ultralytics import YOLO
-from google.protobuf import wrappers_pb2
+from google.protobuf import wrappers_pb2, any_pb2
 from PIL import Image
 
 import bosdyn.client
@@ -33,10 +33,14 @@ kServiceAuthority = "fetch-tutorial-worker.spot.robot"
 class UltralyticsObjectDetectionModel:
     def __init__(self, model_path):
         self.detect_fn = YOLO(model_path)
-        self.category_index = self.detect_fn.names
         self.name = os.path.basename(os.path.dirname(model_path))
 
-    def predict(self, image):
+    def predict(self, image, object_list):
+        # For vocabulary-based models
+        if "world" in self.name:
+            if len(object_list) > 0:
+                self.detect_fn.set_classes(object_list)
+
         detections = self.detect_fn(image)
         return detections
 
@@ -80,6 +84,16 @@ def process_thread(args, request_queue, response_queue):
             continue
 
         model = models[request.input_data.model_name]
+        
+        # Check for specific object to detect (only for models that allow specific vocabulary)
+        detect_object = []
+        if request.input_data.other_data is not None:
+            unpacked_msg = wrappers_pb2.StringValue()
+            if request.input_data.other_data.Is(wrappers_pb2.StringValue.DESCRIPTOR):
+                request.input_data.other_data.Unpack(unpacked_msg)
+        
+            if (unpacked_msg.value != ""):
+                detect_object.append(unpacked_msg.value)
 
         # Unpack the incoming image.
         if request.input_data.image.format == image_pb2.Image.FORMAT_RAW:
@@ -110,7 +124,7 @@ def process_thread(args, request_queue, response_queue):
         image_width = image.shape[0]
         image_height = image.shape[1]
 
-        detections = model.predict(image)
+        detections = model.predict(image, detect_object)
 
         num_objects = 0
 
@@ -121,6 +135,7 @@ def process_thread(args, request_queue, response_queue):
         boxes = []
         classes = []
         scores = []
+        labels = detections[0].names
         
         for det in detections:
             for i in range(len(det.boxes.cls)):
@@ -140,8 +155,8 @@ def process_thread(args, request_queue, response_queue):
 
             score = scores[i]
 
-            if classes[i] in model.category_index.keys():
-                label = model.category_index[classes[i]]
+            if classes[i] in labels.keys():
+                label = labels[classes[i]]
             else:
                 label = 'N/A'
 

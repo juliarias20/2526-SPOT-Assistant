@@ -11,7 +11,7 @@ import time
 
 import cv2
 import numpy as np
-from google.protobuf import wrappers_pb2
+from google.protobuf import wrappers_pb2, any_pb2
 
 import bosdyn.client
 import bosdyn.client.util
@@ -39,6 +39,11 @@ def get_obj_and_img(network_compute_client, server, model, confidence, image_sou
         image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
             image_source=source)
 
+        # Pack object to detect
+        string_msg = wrappers_pb2.StringValue(value=label)
+        any_msg = any_pb2.Any()
+        any_msg.Pack(string_msg)
+
         # Input data:
         #   model name
         #   minimum confidence (between 0 and 1)
@@ -46,7 +51,8 @@ def get_obj_and_img(network_compute_client, server, model, confidence, image_sou
         input_data = network_compute_bridge_pb2.NetworkComputeInputData(
             image_source_and_service=image_source_and_service, model_name=model,
             min_confidence=confidence, rotate_image=network_compute_bridge_pb2.
-            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL)
+            NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL,
+            other_data=any_msg)
 
         # Server data: the service name
         server_data = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
@@ -175,6 +181,8 @@ def main(argv):
     parser.add_argument('-e', '--confidence-person',
                         help='Minimum confidence for person detection (0.0 to 1.0)', default=0.6,
                         type=float)
+    parser.add_argument('-o', '--object_detect',
+                        help="Object to detect", required=True, type=str)
     options = parser.parse_args(argv)
 
     cv2.namedWindow("Fetch")
@@ -207,7 +215,7 @@ def main(argv):
                 # Capture an image and run ML on it.
                 object, image, vision_tform_object = get_obj_and_img(
                     network_compute_client, options.ml_service, options.model,
-                    options.confidence_object, kImageSources, 'bottle')
+                    options.confidence_object, kImageSources, object)
 
                 if object is None:
                     # Didn't find anything, keep searching.
