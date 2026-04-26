@@ -370,7 +370,7 @@ def main():
     executor = TaskExecutor(robot, interpreter=interpreter)
 
     if connected:
-        _get_perception(embedder=interpreter.embedder)
+        _get_perception()
         robot._debug_camera_snapshot()
 
     # ── Start live feed thread ────────────────────────────────────────────────
