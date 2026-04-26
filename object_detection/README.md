@@ -35,6 +35,9 @@
 - To create new object detection models, use the notebook `YOLO_SPOT.ipynb`, open in Google Colab, and follow the directions there. 
     - Once you have downloaded the new model, make sure to create a directory under `/models` with the desired name for the model and put the `.pt` file there.
 
+## Dataset
+- We have uploaded our datasets in Roboflow: https://universe.roboflow.com/spot-datasets-ectut
+
 ## Image Sources
     - `back_depth`
     - `back_depth_in_visual_frame`
