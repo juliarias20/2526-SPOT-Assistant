@@ -68,6 +68,9 @@ SPOT_IP: str = os.environ.get("SPOT_IP", "192.168.80.3")
 SPOT_USER: str = os.environ.get("SPOT_USER", "user")
 SPOT_PASS: str = os.environ.get("SPOT_PASS", "password")
 
+os.environ["BOSDYN_CLIENT_USERNAME"] = SPOT_USER
+os.environ["BOSDYN_CLIENT_PASSWORD"] = SPOT_PASS
+
 # Camera source for YOLO detection and grasp targeting.
 # Must match the source name passed to image_client.get_image_from_sources().
 CAMERA_SOURCE: str = os.environ.get("CAMERA_SOURCE", "frontleft_fisheye_image")
@@ -340,6 +343,7 @@ class SpotRobot:
                 frame = np.frombuffer(img_bytes, dtype=np.uint8).reshape(h, w, -1)
 
             # Run YOLO
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             perc = _get_perception()
             results = perc._yolo(frame) if perc._yolo else None
 
