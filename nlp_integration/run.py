@@ -181,20 +181,43 @@ class LiveFeedThread(threading.Thread):
             return None
 
     # ── Network compute server mode ───────────────────────────────────────────
-
     def _grab_server(self):
-        """Route detection through object_detection/network_compute_server.py."""
         try:
             import cv2
             import numpy as np
             from google.protobuf import wrappers_pb2
             from bosdyn.api import network_compute_bridge_pb2, image_pb2
+            from bosdyn.client.image import ImageClient
             from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
+            # ── 1. Fetch raw frame from ImageClient ───────────────────────────────
+            image_client = self.robot.robot.ensure_client(
+                ImageClient.default_service_name
+            )
+            responses = image_client.get_image_from_sources([self.camera_source])
+            if not responses:
+                return None
+
+            resp_img = responses[0]
+            img_bytes = resp_img.shot.image.data
+            fmt = resp_img.shot.image.format
+
+            if fmt == 1:  # JPEG
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            else:
+                w = resp_img.shot.image.cols
+                h = resp_img.shot.image.rows
+                raw = np.frombuffer(img_bytes, dtype=np.uint8).reshape(h, w, -1)
+                frame = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR) if raw.shape[2] == 1 else raw
+
+            if frame is None:
+                return None
+
+            # ── 2. Send to NCB server for detections ──────────────────────────────
             nc_client = self.robot.robot.ensure_client(
                 NetworkComputeBridgeClient.default_service_name
             )
-
             image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
                 image_source=self.camera_source
             )
@@ -212,21 +235,7 @@ class LiveFeedThread(threading.Thread):
             )
             resp = nc_client.network_compute_bridge_command(req)
 
-            # Decode image from response
-            img_data = resp.image_response.shot.image.data
-            fmt = resp.image_response.shot.image.format
-            if fmt == image_pb2.Image.FORMAT_RAW:
-                rows = resp.image_response.shot.image.rows
-                cols = resp.image_response.shot.image.cols
-                frame = np.frombuffer(img_data, dtype=np.uint8).reshape(rows, cols, -1)
-            else:
-                arr = np.frombuffer(img_data, dtype=np.uint8)
-                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-            if frame is None:
-                return None
-
-            # Draw bounding boxes from server response (orange — distinguishes from local)
+            # ── 3. Draw bounding boxes from server detections ─────────────────────
             annotated = frame.copy()
             for obj in resp.object_in_image:
                 conf_msg = wrappers_pb2.FloatValue()

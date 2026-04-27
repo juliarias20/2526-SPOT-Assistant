@@ -133,10 +133,8 @@ MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
 # Populate this after running record_map.py — copy the printed WAYPOINT_MAP
 # dict here. Navigate() resolves names through this table before calling SDK.
 WAYPOINT_MAP: dict[str, str] = {
-    "desk": "grumpy-badger-YPi8A7FiWb2wIq7HkdS2Yw==",
-    "table": "yon-gecko-41pIuDv5rntuRxE5jJR9QA==",
-    "kitchen": "stated-raven-4VlAnYETdp6hMh.HUqISHw==",
-    "user": "kept-bobcat-kvOfmc7O6WYzoWf2q6z6Pw==",
+    "table": "presto-antler-42NbnyuG86.QHvmu7JC4dw==",
+    "user": "seemly-newt-IgxjUPSWWUZAUFQQwtFtSA==",
 }
 
 # Starting waypoint for no-fiducial localization fallback.

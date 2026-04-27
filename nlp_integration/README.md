@@ -112,7 +112,7 @@ $env:SPOT_IP   = "192.168.80.3"
 $env:SPOT_USER = "user"
 $env:SPOT_PASS = "password"
 
-python record_map.py --output maps/trial_space
+python -X utf8 record_map.py --output maps/trial_space
 ```
 
 Walk SPOT to each location and type a name when prompted:
