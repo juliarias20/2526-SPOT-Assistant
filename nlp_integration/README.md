@@ -128,9 +128,9 @@ Place objects in view from the appropriate waypoints:
 
 | Location | Objects |
 |---|---|
-| Visible from start | pen, scissors, laptop, bottle, backpack |
+| Visible from start | pen, mug, box, bottle, backpack |
 | Desk waypoint | notebook, pen, stapler |
-| Table waypoint | cup, charger |
+| Table waypoint | mug, charger |
 
 ---
 
