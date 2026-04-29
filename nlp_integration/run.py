@@ -36,6 +36,21 @@ Live feed modes:
 
 import sys
 import os
+
+# ── Offline mode — must be set before any HuggingFace imports ────────────────
+# Pass --offline flag or set OFFLINE_MODE=true to run fully air-gapped.
+# HF_HUB_OFFLINE=1 covers transformers, sentence-transformers, and tokenizers
+# since they all share the huggingface_hub backend.
+_offline = (
+    "--offline" in sys.argv
+    or os.environ.get("OFFLINE_MODE", "false").lower() == "true"
+)
+if _offline:
+    os.environ["HF_HUB_OFFLINE"]      = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"]  = "1"
+    print("[run] Offline mode enabled — using cached models only.")
+    
 import time
 import threading
 import argparse
@@ -343,6 +358,8 @@ def main():
                         help="Model name on compute server (default: yolov8n)")
     parser.add_argument("--camera", default="frontleft_fisheye_image",
                         help="Camera source (default: frontleft_fisheye_image)")
+    parser.add_argument("--offline", action="store_true",
+                        help="Run fully offline using cached models. Run cache_models.py once while online first.")
     args, _ = parser.parse_known_args()
 
     single_cmd = " ".join(args.command).strip() if args.command else None

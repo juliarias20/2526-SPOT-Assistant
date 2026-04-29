@@ -14,6 +14,7 @@ A context-aware natural language command interpretation framework for autonomous
 │   ├── run.py                    # ← Interactive task runner (start here)
 │   ├── live_trials.py            # 20-trial live evaluation runner
 │   ├── record_map.py             # GraphNav map recording utility
+│   ├── cache_models.py           # One-time model download script (run before going offline)
 │   ├── interpret.py              # Phase I: NLP interpretation
 │   ├── executor.py               # Phase IV: task execution
 │   ├── perception.py             # Phase III: perceptual grounding
@@ -23,7 +24,8 @@ A context-aware natural language command interpretation framework for autonomous
 │   ├── evaluate_phase3.py        # Phase III evaluator
 │   ├── evaluate_phase4.py        # Phase IV evaluator
 │   ├── models/                   # Local model files (not tracked by git)
-│   │   └── bert-spot-intent/     # Fine-tuned BERT intent classifier (from Anvil)
+│   │   ├── bert-spot-intent/     # Fine-tuned BERT intent classifier (from Anvil)
+│   │   └── sentence_transformers/# Cached SentenceTransformer weights (from cache_models.py)
 │   ├── data/                     # Gold datasets + trial logs
 │   └── maps/                     # GraphNav map files (after record_map.py)
 └── object_detection/             # External YOLO detection server (optional)
@@ -52,56 +54,30 @@ pip install -r requirements.txt
 
 For GPU / CUDA support with PyTorch, select your version at https://pytorch.org/get-started/locally/ before installing.
 
-### Intent classifier model
-
-The Phase I intent classifier uses a fine-tuned `bert-base-uncased` model trained on 1,863 domain-specific robot command examples. The model is stored locally and loaded at runtime with no internet connection required.
-
-**The model files must be present at:** `nlp_integration/models/bert-spot-intent/`
-
-The directory should contain: `config.json`, `model.safetensors`, `tokenizer.json`, `vocab.txt`, `tokenizer_config.json`, `special_tokens_map.json`, `label_map.json`.
-
-If you need to retrain the model (e.g. adding new intent classes), see `generate_training_data.py` and `finetune_bert.py` — the training pipeline targets Purdue Anvil GPU nodes via Slurm but can run on any CUDA-capable machine.
-
 ---
 
-## Quick Start — run.py
+## First-Time Setup
 
-`run.py` is the main entry point. Run it from the `nlp_integration/` directory.
+Complete these steps once before your first session.
 
-### Mock mode (no robot required)
+### 1. Download and cache all model weights
+
+Run this once while connected to the internet. After this the system runs fully offline.
 
 ```powershell
 cd nlp_integration
-python run.py
+python cache_models.py
 ```
 
-SPOT is not required. All skills execute in mock/dry-run mode and print what they would do. Use this for development and testing.
+This downloads and caches:
+- `sentence-transformers/all-MiniLM-L6-v2` → `models/sentence_transformers/`
+- `spaCy en_core_web_sm` (if not already installed)
+- Verifies `models/bert-spot-intent/` weights are present
+- Verifies `yolov8n.pt` is present (downloads if missing)
 
-```
-SPOT> bring me the pen
-SPOT> go to the desk and bring me the notebook
-SPOT> bring me something to write with
-SPOT> hand me something sharp
-SPOT> scan the room
-SPOT> find my backpack
-SPOT> exit
-```
+If the BERT model is missing, run `finetune_bert.py` on Purdue Anvil first (see training section below).
 
-### Single command mode
-
-```powershell
-python run.py "go to the desk and bring me the notebook"
-```
-
-Executes one command and exits. Works in both mock and live mode.
-
----
-
-## Live SPOT — Setup Checklist
-
-Complete these steps **once** before your first live session.
-
-### 1. Record the GraphNav map
+### 2. Record the GraphNav map (live SPOT only)
 
 Power on SPOT, stand it at your starting position, then run:
 
@@ -110,7 +86,7 @@ cd nlp_integration
 
 $env:SPOT_IP   = "192.168.80.3"
 $env:SPOT_USER = "user"
-$env:SPOT_PASS = "password"
+$env:SPOT_PASS = "yourpassword"
 
 python -X utf8 record_map.py --output maps/trial_space
 ```
@@ -125,11 +101,11 @@ user        ← IMPORTANT: stamp this at your standing position (delivery target
 done        ← when finished
 ```
 
-The script prints a `WAYPOINT_MAP` dict and saves it to `maps/trial_space/waypoint_map.txt`. Copy the dict into `spot_skills.py` and note the UUID for the `user` waypoint — you will need it as `SPOT_START_WAYPOINT`.
+The script prints a `WAYPOINT_MAP` dict and saves it to `maps/trial_space/waypoint_map.txt`.
 
-### 2. Update spot_skills.py
+### 3. Update WAYPOINT_MAP in spot_skills.py
 
-Open `spot_skills.py` and replace the `WAYPOINT_MAP` placeholder:
+Open `spot_skills.py` and replace the `WAYPOINT_MAP` placeholder with your recorded UUIDs:
 
 ```python
 WAYPOINT_MAP: dict = {
@@ -140,7 +116,13 @@ WAYPOINT_MAP: dict = {
 }
 ```
 
-### 3. Stage objects for trials
+**Note:** `LOCATION_NOUNS` in `executor.py` is automatically derived from `WAYPOINT_MAP` keys, so you do not need to update it separately. Waypoint name matching also handles partial matches — `"kit"` will resolve to `"kitchen"`, `"work"` will resolve to `"workspace"`, etc.
+
+### 4. Set SPOT_START_WAYPOINT
+
+Note the UUID printed for the `user` waypoint. You will use it as `SPOT_START_WAYPOINT` when running live. This is the fallback localization position when no AprilTag is visible.
+
+### 5. Stage objects for trials
 
 Place objects in view from the appropriate waypoints:
 
@@ -152,9 +134,36 @@ Place objects in view from the appropriate waypoints:
 
 ---
 
-## Live SPOT — Running run.py
+## Running in Mock Mode (No Robot Required)
 
-Set environment variables, then launch:
+```powershell
+cd nlp_integration
+python run.py
+```
+
+All skills execute in dry-run mode and print what they would do. No SPOT connection needed. Use this for development and testing.
+
+```
+SPOT> bring me the pen
+SPOT> go to the desk and bring me the notebook
+SPOT> bring me something to write with
+SPOT> hand me something sharp
+SPOT> scan the room
+SPOT> find my backpack
+SPOT> exit
+```
+
+### Single command
+
+```powershell
+python run.py "go to the desk and bring me the notebook"
+```
+
+---
+
+## Running Live on SPOT
+
+### Standard (local YOLO detection)
 
 ```powershell
 cd nlp_integration
@@ -162,52 +171,51 @@ cd nlp_integration
 $env:USE_SPOT            = "true"
 $env:SPOT_IP             = "192.168.80.3"
 $env:SPOT_USER           = "user"
-$env:SPOT_PASS           = "password"
+$env:SPOT_PASS           = "yourpassword"
 $env:SPOT_MAP_PATH       = "maps/trial_space"
 $env:SPOT_START_WAYPOINT = "paste-user-waypoint-uuid-here"
 
-python run.py
+python run.py --offline
 ```
 
 On connect, the framework will:
 1. Power on and stand SPOT
-2. Clear any behavior faults from previous sessions
+2. Clear any behavior faults from a previous session
 3. Upload the GraphNav map and set localization
-4. Capture a debug camera snapshot (`debug_camera.jpg`) — open this to verify YOLO is detecting objects before issuing commands
+4. Save a debug camera snapshot to `debug_camera.jpg` — open this to verify YOLO is detecting objects before issuing commands
 
 ### With live camera feed window
 
 ```powershell
-python run.py --live-feed
+python run.py --offline --live-feed
 ```
 
-Opens a cv2 window showing the front camera with YOLO bounding boxes (green). Press `q` in the window to close the feed. The REPL continues running while the feed is open.
+Opens a cv2 window showing the front camera with YOLO bounding boxes (green). Press `q` in the window to close it — the REPL continues running.
 
 ```
 SPOT> feed on       # start feed mid-session
 SPOT> feed off      # stop feed
-SPOT> status        # show connection status and feed state
+SPOT> status        # show connection and feed status
 ```
 
----
+### With Network Compute Server (custom YOLO model)
 
-## Live SPOT — With Network Compute Server (Custom Models)
+Use this to run a custom-trained model from `object_detection/models/` for detection.
 
-Use this when you want to run a custom-trained YOLO model from `object_detection/models/` for detection instead of the built-in `yolov8n.pt`.
-
-### Step 1 — Start the detection server (Terminal 1)
+**Terminal 1 — start the detection server:**
 
 ```powershell
 cd nlp_integration
 
 python ..\object_detection\network_compute_server.py `
     -m ..\object_detection\models\<your_model>\<your_model>.pt `
+    --username user --password yourpassword `
     192.168.80.3
 ```
 
-The server registers itself with SPOT's directory service. Leave this terminal running.
+Leave this terminal running.
 
-### Step 2 — Run with NCB enabled (Terminal 2)
+**Terminal 2 — run with NCB enabled:**
 
 ```powershell
 cd nlp_integration
@@ -215,54 +223,53 @@ cd nlp_integration
 $env:USE_SPOT            = "true"
 $env:SPOT_IP             = "192.168.80.3"
 $env:SPOT_USER           = "user"
-$env:SPOT_PASS           = "password"
+$env:SPOT_PASS           = "yourpassword"
 $env:SPOT_MAP_PATH       = "maps/trial_space"
 $env:SPOT_START_WAYPOINT = "paste-user-waypoint-uuid-here"
 $env:USE_COMPUTE_SERVER  = "true"
-$env:NCB_SERVER_NAME     = "fetch-server"
-$env:NCB_MODEL_NAME      = "<your_model_name>"
-$env:NCB_CONFIDENCE      = "0.5"
+$env:NCB_MODEL_NAME      = "your_model_name"
 
-python run.py --live-feed --use-compute-server
+python run.py --offline --live-feed --use-compute-server
 ```
 
-When `USE_COMPUTE_SERVER=true`, `locate()` and `pick_up()` route through the NCB server across all five fisheye cameras. If the server is unreachable, the framework falls back to local YOLO automatically.
-
-The live feed window uses **orange boxes** for NCB detections and **green boxes** for local YOLO.
+When `USE_COMPUTE_SERVER=true`:
+- `locate()` and `pick_up()` query the NCB server across all five fisheye cameras
+- If the server is unreachable, the framework automatically falls back to local YOLO
+- If the object is not immediately visible, SPOT performs up to 4 scan rotations (one full 360°) before reporting failure
+- The live feed shows **orange boxes** for NCB detections and **green boxes** for local YOLO
 
 ---
 
 ## Running the 20-Trial Live Evaluation
 
-Used for the thesis Phase IV evaluation. Runs all 20 commands with operator prompts between each trial.
+Runs all 20 thesis evaluation commands with operator prompts between each trial.
 
 ```powershell
 # Set all env vars as above, then:
 
 # No feed
-python live_trials.py
+python live_trials.py --offline
 
-# With local YOLO feed window
-python live_trials.py --live-feed
+# With local YOLO feed
+python live_trials.py --offline --live-feed
 
 # With NCB server feed (start network_compute_server.py first)
-python live_trials.py --live-feed --use-compute-server
+python live_trials.py --offline --live-feed --use-compute-server
 ```
 
 Results are saved to `data/live_trials.jsonl` and `data/live_trials_<run_id>.json`.
 
-At each prompt, type `y` to proceed or `n` to save and exit. After each trial you can type an operator note (or press Enter to skip).
-
-The live feed runs in the background — operator prompts and trial execution are unaffected while the feed window is open. Press `q` in the feed window to close just the window; trials continue. Ctrl+C and `n` at any prompt both stop the feed cleanly before saving.
+At each prompt, type `y` to proceed or `n` to save and exit. After each trial you can type an operator note or press Enter to skip.
 
 ### live_trials.py flags
 
 | Flag | Description |
 |---|---|
+| `--offline` | Run fully offline using cached models |
 | `--live-feed` | Show live camera feed during trials |
 | `--use-compute-server` | Route feed detections through NCB server |
-| `--server <n>` | NCB server name (default: `fetch-server`) |
-| `--model <n>` | NCB model name (default: `yolov8n`) |
+| `--server <name>` | NCB server name (default: `fetch-server`) |
+| `--model <name>` | NCB model name (default: `yolov8n`) |
 | `--camera <source>` | Camera source for feed (default: `frontleft_fisheye_image`) |
 
 ---
@@ -287,13 +294,33 @@ Expected results:
 | I | Intent Accuracy | 0.840 |
 | I | Clarification F1 | 0.824 |
 | II | Clause Count Accuracy | 100% |
-| II | Per-Clause Intent Acc. | 96.4% |
+| II | Per-Clause Intent Accuracy | 96.4% |
 | II | Step-Sequence F1 | 0.863 |
 | II | Edge-Type Accuracy | 100% |
-| III | Top-1 Grounding Acc. | 85.0% |
+| III | Top-1 Grounding Accuracy | 85.0% |
 | III | Mean Reciprocal Rank | 0.889 |
 | IV | Task Completion Rate | 95.0% |
-| IV | Plan / Object / Waypoint Acc. | 100% |
+| IV | Plan / Object / Waypoint Accuracy | 100% |
+
+---
+
+## Retraining the BERT Classifier
+
+If you need to add new intent classes or retrain from scratch:
+
+```powershell
+# Generate training data
+python generate_training_data.py
+
+# Submit to Purdue Anvil (requires ACCESS-CI allocation)
+# Edit submit_finetune.sh with your Anvil username first
+bash submit_finetune.sh
+
+# Or run locally on a CUDA-capable machine
+python finetune_bert.py
+```
+
+After training, copy the output directory to `models/bert-spot-intent/`. Then re-run `cache_models.py` to verify the new weights load correctly.
 
 ---
 
@@ -307,6 +334,7 @@ Expected results:
 | `SPOT_PASS` | *(none)* | SPOT login password |
 | `SPOT_MAP_PATH` | `maps/trial_space` | Path to recorded GraphNav map directory |
 | `SPOT_START_WAYPOINT` | *(empty)* | UUID of start waypoint for no-fiducial localization |
+| `OFFLINE_MODE` | `false` | Set `true` to force offline model loading (same as `--offline` flag) |
 | `CAMERA_SOURCE` | `frontleft_fisheye_image` | Camera used for local YOLO detection |
 | `USE_COMPUTE_SERVER` | `false` | Route locate/pick_up through NCB server |
 | `NCB_SERVER_NAME` | `fetch-server` | NCB server service name |
@@ -331,18 +359,31 @@ Expected results:
 
 | Flag | Description |
 |---|---|
+| `--offline` | Run fully offline using cached models — recommended for all lab sessions |
 | `--live-feed` | Open camera feed window on connect |
-| `--use-compute-server` | Use NCB server for feed detections |
+| `--use-compute-server` | Use NCB server for feed and task detections |
 | `--server <name>` | NCB server name (default: `fetch-server`) |
 | `--model <name>` | NCB model name (default: `yolov8n`) |
 | `--camera <source>` | Camera source for feed (default: `frontleft_fisheye_image`) |
 
 ---
 
-## Notes
+## Troubleshooting
 
-- Run all commands from the `nlp_integration/` directory.
-- `debug_camera.jpg` is saved to `nlp_integration/` on every live connect. Open it to verify camera and YOLO are working before starting trials.
-- If SPOT has behavior faults from a previous session (e.g. it fell), `connect()` clears them automatically.
-- If localization fails (no AprilTag visible), set `SPOT_START_WAYPOINT` to the UUID of the waypoint where SPOT is physically standing.
-- The `user` waypoint must be stamped during map recording — it is the delivery target for all retrieve commands. Always stamp it at your standing position.
+**Localization failed (STATUS_NO_MATCHING_FIDUCIAL)**
+Place an AprilTag in SPOT's view before connecting, or set `SPOT_START_WAYPOINT` to the UUID of the waypoint where SPOT is physically standing and make sure SPOT is at that position before connecting.
+
+**Navigate command doesn't resolve a location**
+Ensure the location name is in `WAYPOINT_MAP` in `spot_skills.py`. The resolver handles partial matches (`"kit"` → `"kitchen"`) but the base name must exist as a key. Check the `[spot] WARNING:` line in the output to see exactly what name was passed.
+
+**Gray box in live feed / no detections**
+The NCB server is not returning image data (this is expected — it only returns bounding boxes). The feed fetches the frame directly from SPOT's ImageClient. If the window is gray, verify the `--use-compute-server` flag is set correctly (note: `--use-commpute-server` with a double `m` is silently ignored).
+
+**Object not found during fetch task**
+SPOT will automatically rotate up to 4 times (one full 360°) scanning for the object before reporting failure. If it still fails, verify the object is within SPOT's camera range and the model confidence threshold (`NCB_CONFIDENCE`) is not set too high.
+
+**HuggingFace authentication warnings at startup**
+These are cosmetic — the system is loading from local cache and not downloading anything. Run with `--offline` to suppress them entirely.
+
+**Behavior faults on connect**
+SPOT clears behavior faults automatically on connect. If SPOT falls or has a fault between sessions, the `connect()` call handles it. If it persists, power cycle SPOT and reconnect.

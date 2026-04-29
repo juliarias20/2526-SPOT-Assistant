@@ -46,8 +46,8 @@ class Phase1Interpreter:
 
         # Load fine-tuned BERT classifier from local path (no internet needed)
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self._tokenizer = BertTokenizerFast.from_pretrained(bert_model_path)
-        self._classifier = BertForSequenceClassification.from_pretrained(bert_model_path)
+        self._tokenizer = BertTokenizerFast.from_pretrained(bert_model_path, local_files_only=True)
+        self._classifier = BertForSequenceClassification.from_pretrained(bert_model_path, local_files_only=True)
         self._classifier.to(self._device)
         self._classifier.eval()
 
