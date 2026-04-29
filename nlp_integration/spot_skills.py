@@ -68,32 +68,9 @@ SPOT_IP: str = os.environ.get("SPOT_IP", "192.168.80.3")
 SPOT_USER: str = os.environ.get("SPOT_USER", "user")
 SPOT_PASS: str = os.environ.get("SPOT_PASS", "password")
 
-os.environ["BOSDYN_CLIENT_USERNAME"] = SPOT_USER
-os.environ["BOSDYN_CLIENT_PASSWORD"] = SPOT_PASS
-
 # Camera source for YOLO detection and grasp targeting.
 # Must match the source name passed to image_client.get_image_from_sources().
 CAMERA_SOURCE: str = os.environ.get("CAMERA_SOURCE", "frontleft_fisheye_image")
-
-# All fisheye sources — used by NCB locate() to scan every angle.
-ALL_CAMERA_SOURCES: List[str] = [
-    "frontleft_fisheye_image",
-    "frontright_fisheye_image",
-    "left_fisheye_image",
-    "right_fisheye_image",
-    "back_fisheye_image",
-]
-
-# NetworkComputeBridge (object_detection/network_compute_server.py) settings.
-# Set USE_COMPUTE_SERVER=true to route locate() and pick_up() through the
-# external detection server instead of the local YOLOv8 singleton.
-#
-# Start the server first:
-#   python object_detection/network_compute_server.py -m <model.pt> 192.168.80.3
-USE_COMPUTE_SERVER: bool  = os.environ.get("USE_COMPUTE_SERVER", "false").lower() == "true"
-NCB_SERVER_NAME:   str   = os.environ.get("NCB_SERVER_NAME",    "fetch-server")
-NCB_MODEL_NAME:    str   = os.environ.get("NCB_MODEL_NAME",     "yolov8n")
-NCB_CONFIDENCE:    float = float(os.environ.get("NCB_CONFIDENCE", "0.5"))
 
 # All fisheye sources — used by NCB locate() to scan every angle.
 ALL_CAMERA_SOURCES: List[str] = [
@@ -132,10 +109,43 @@ MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
 # Human-readable waypoint name -> GraphNav UUID.
 # Populate this after running record_map.py — copy the printed WAYPOINT_MAP
 # dict here. Navigate() resolves names through this table before calling SDK.
-WAYPOINT_MAP: dict[str, str] = {
-    "table": "presto-antler-42NbnyuG86.QHvmu7JC4dw==",
-    "user": "seemly-newt-IgxjUPSWWUZAUFQQwtFtSA==",
+WAYPOINT_MAP: dict = {
+    # "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "table":   "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "kitchen": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    # "user":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
 }
+
+def _resolve_waypoint(name: str) -> str:
+    """
+    Resolve a human-readable location name to a GraphNav UUID.
+
+    Resolution order:
+      1. Exact match (case-insensitive)
+      2. Prefix match  — 'kit' resolves to 'kitchen' key
+      3. Substring match — 'work' resolves to 'workspace' key
+      4. Raw passthrough — lets UUIDs work directly
+
+    This means WAYPOINT_MAP is the single source of truth.
+    You never need to update LOCATION_NOUNS manually.
+    """
+    key = name.lower().strip()
+    # 1. Exact
+    if key in WAYPOINT_MAP:
+        return WAYPOINT_MAP[key]
+    # 2. Prefix
+    for wk in WAYPOINT_MAP:
+        if wk.startswith(key) or key.startswith(wk):
+            print(f"[spot] waypoint prefix match: '{key}' -> '{wk}'")
+            return WAYPOINT_MAP[wk]
+    # 3. Substring
+    for wk in WAYPOINT_MAP:
+        if key in wk or wk in key:
+            print(f"[spot] waypoint substring match: '{key}' -> '{wk}'")
+            return WAYPOINT_MAP[wk]
+    # 4. Passthrough (UUID or unknown)
+    print(f"[spot] WARNING: '{name}' not in WAYPOINT_MAP — passing raw to GraphNav")
+    return name
 
 # Starting waypoint for no-fiducial localization fallback.
 # Set this to the UUID of the waypoint SPOT starts at when no AprilTag
@@ -341,7 +351,6 @@ class SpotRobot:
                 frame = np.frombuffer(img_bytes, dtype=np.uint8).reshape(h, w, -1)
 
             # Run YOLO
-            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             perc = _get_perception()
             results = perc._yolo(frame) if perc._yolo else None
 
@@ -549,6 +558,12 @@ def _ncb_get_object(
     the skill registry pattern.  Searches every camera source in `sources`
     and returns the highest-confidence detection matching `label`.
 
+    NOTE: The NCB worker server (network_compute_server.py) does NOT populate
+    resp.image_response — it only returns object_in_image detections.  We
+    therefore fetch the camera frame directly via ImageClient for the same
+    source and use it as the image_response for the grasp request.  This
+    keeps transforms_snapshot and frame metadata consistent.
+
     Returns:
         (best_obj, image_response, vision_tform_obj)
         All three are None if the object was not found or the server is
@@ -557,36 +572,35 @@ def _ncb_get_object(
     Prerequisites:
         The server must be running before calling connect():
             python object_detection/network_compute_server.py \
-                -m object_detection/models/<name>/<model>.pt 192.168.80.3
+                -m object_detection/models/<n>/<model>.pt 192.168.80.3
     """
+    from bosdyn.client.image import ImageClient
+
     if sources is None:
         sources = ALL_CAMERA_SOURCES
 
     try:
-        nc_client = robot.robot.ensure_client(
-            NetworkComputeBridgeClient.default_service_name
-        )
+        nc_client    = robot.robot.ensure_client(NetworkComputeBridgeClient.default_service_name)
+        image_client = robot.robot.ensure_client(ImageClient.default_service_name)
     except Exception as e:
-        print(f"[ncb] Could not get NCB client: {e}")
+        print(f"[ncb] Could not get clients: {e}")
         return None, None, None
 
-    best_obj             = None
-    highest_conf         = 0.0
-    best_image_response  = None
-    best_vision_tform    = None
+    best_obj            = None
+    highest_conf        = 0.0
+    best_image_response = None
+    best_vision_tform   = None
 
     for source in sources:
-        img_svc = network_compute_bridge_pb2.ImageSourceAndService(image_source=source)
+        img_svc    = network_compute_bridge_pb2.ImageSourceAndService(image_source=source)
         input_data = network_compute_bridge_pb2.NetworkComputeInputData(
             image_source_and_service=img_svc,
             model_name=model,
             min_confidence=confidence,
             rotate_image=network_compute_bridge_pb2.NetworkComputeInputData.ROTATE_IMAGE_ALIGN_HORIZONTAL,
         )
-        server_cfg = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
-            service_name=server
-        )
-        request = network_compute_bridge_pb2.NetworkComputeRequest(
+        server_cfg = network_compute_bridge_pb2.NetworkComputeServerConfiguration(service_name=server)
+        request    = network_compute_bridge_pb2.NetworkComputeRequest(
             input_data=input_data, server_config=server_cfg
         )
 
@@ -599,6 +613,19 @@ def _ncb_get_object(
             print(f"[ncb] Request failed on {source}: {e}")
             continue
 
+        if not resp.object_in_image:
+            continue
+
+        # Fetch the actual camera frame — NCB worker does not populate
+        # resp.image_response, so we pull it from ImageClient directly.
+        # pick_up needs this for transforms_snapshot and camera_model.
+        try:
+            img_responses       = image_client.get_image_from_sources([source])
+            source_image_resp   = img_responses[0] if img_responses else None
+        except Exception as e:
+            print(f"[ncb] ImageClient fetch failed for {source}: {e}")
+            source_image_resp = None
+
         for obj in resp.object_in_image:
             obj_label = obj.name.split("_label_")[-1]
             if obj_label.lower() != label.lower():
@@ -615,124 +642,73 @@ def _ncb_get_object(
                     obj.image_properties.frame_name_image_coordinates,
                 )
             except Exception:
-                vision_tform = None  # depth data unavailable — still usable for 2-D grasp
+                vision_tform = None  # no depth data — still usable for 2-D pixel grasp
 
             if conf > highest_conf:
                 highest_conf        = conf
                 best_obj            = obj
-                best_image_response = resp.image_response
+                best_image_response = source_image_resp
                 best_vision_tform   = vision_tform
 
     return best_obj, best_image_response, best_vision_tform
 
 
-# ── NetworkComputeBridge helpers (from object_detection/fetch.py) ─────────────
-
-def _find_center_px(polygon) -> tuple:
-    """Return (cx, cy) pixel center of a detection polygon from an NCB response."""
-    import math
-    min_x = min_y = math.inf
-    max_x = max_y = -math.inf
-    for v in polygon.vertexes:
-        min_x = min(min_x, v.x); max_x = max(max_x, v.x)
-        min_y = min(min_y, v.y); max_y = max(max_y, v.y)
-    cx = abs(max_x - min_x) / 2.0 + min_x
-    cy = abs(max_y - min_y) / 2.0 + min_y
-    return cx, cy
-
-
-def _ncb_get_object(
-    robot: "SpotRobot",
-    label: str,
-    server: str = NCB_SERVER_NAME,
-    model: str  = NCB_MODEL_NAME,
-    confidence: float = NCB_CONFIDENCE,
-    sources: Optional[List[str]] = None,
+def _compute_stand_location_and_yaw(
+    vision_tform_target,
+    robot_state_client,
+    distance_margin: float = 1.0,
 ) -> tuple:
     """
-    Query the NetworkComputeBridge server for a named object label.
-
-    Mirrors get_obj_and_img() from object_detection/fetch.py, adapted for
-    the skill registry pattern. Searches every camera source in `sources`
-    and returns the highest-confidence detection matching `label`.
+    Compute a standing position distance_margin metres from the target,
+    facing it.  Ported directly from object_detection/fetch.py.
 
     Returns:
-        (best_obj, image_response, vision_tform_obj)
-        All three are None if the object was not found or the server
-        is unreachable.
-
-    Prerequisites:
-        The server must be running before calling robot.connect():
-            python object_detection/network_compute_server.py \
-                -m object_detection/models/<name>/<model>.pt 192.168.80.3
+        (stand_position_rt_vision [x,y,z], heading_rt_vision float yaw)
     """
-    if sources is None:
-        sources = ALL_CAMERA_SOURCES
+    import numpy as np
+    from bosdyn.client import frame_helpers as _fh, math_helpers as _mh
 
-    try:
-        nc_client = robot.robot.ensure_client(
-            NetworkComputeBridgeClient.default_service_name
-        )
-    except Exception as e:
-        print(f"[ncb] Could not get NCB client: {e}")
-        return None, None, None
+    vision_tform_robot = _fh.get_a_tform_b(
+        robot_state_client.get_robot_state().kinematic_state.transforms_snapshot,
+        _fh.VISION_FRAME_NAME,
+        _fh.GRAV_ALIGNED_BODY_FRAME_NAME,
+    )
 
-    best_obj            = None
-    highest_conf        = 0.0
-    best_image_response = None
-    best_vision_tform   = None
+    robot_rt_target = [
+        vision_tform_robot.x - vision_tform_target.x,
+        vision_tform_robot.y - vision_tform_target.y,
+        vision_tform_robot.z - vision_tform_target.z,
+    ]
+    norm = np.linalg.norm(robot_rt_target)
+    unit = robot_rt_target / norm if norm >= 0.01 else vision_tform_robot.transform_point(1, 0, 0)
 
-    for source in sources:
-        img_svc = network_compute_bridge_pb2.ImageSourceAndService(image_source=source)
-        input_data = network_compute_bridge_pb2.NetworkComputeInputData(
-            image_source_and_service=img_svc,
-            model_name=model,
-            min_confidence=confidence,
-            rotate_image=network_compute_bridge_pb2.NetworkComputeInputData
-                         .ROTATE_IMAGE_ALIGN_HORIZONTAL,
-        )
-        server_cfg = network_compute_bridge_pb2.NetworkComputeServerConfiguration(
-            service_name=server
-        )
-        req = network_compute_bridge_pb2.NetworkComputeRequest(
-            input_data=input_data, server_config=server_cfg
-        )
+    stand_pos = [
+        vision_tform_target.x + unit[0] * distance_margin,
+        vision_tform_target.y + unit[1] * distance_margin,
+        vision_tform_target.z + unit[2] * distance_margin,
+    ]
 
-        try:
-            resp = nc_client.network_compute_bridge_command(req)
-        except ExternalServerError as e:
-            print(f"[ncb] Server error on {source}: {e} (may be transient)")
-            continue
-        except Exception as e:
-            print(f"[ncb] Request failed on {source}: {e}")
-            continue
+    xhat = [-float(u) for u in unit]
+    zhat = [0.0, 0.0, 1.0]
+    yhat = list(np.cross(zhat, xhat))
+    mat  = np.matrix([xhat, yhat, zhat]).transpose()
+    heading = _mh.Quat.from_matrix(mat).to_yaw()
 
-        for obj in resp.object_in_image:
-            obj_label = obj.name.split("_label_")[-1]
-            if obj_label.lower() != label.lower():
-                continue
+    return stand_pos, heading
 
-            conf_msg = wrappers_pb2.FloatValue()
-            obj.additional_properties.Unpack(conf_msg)
-            conf = conf_msg.value
 
-            try:
-                vision_tform = frame_helpers.get_a_tform_b(
-                    obj.transforms_snapshot,
-                    VISION_FRAME_NAME,
-                    obj.image_properties.frame_name_image_coordinates,
-                )
-            except Exception:
-                # No depth data — still usable for 2-D pixel-based grasp.
-                vision_tform = None
-
-            if conf > highest_conf:
-                highest_conf        = conf
-                best_obj            = obj
-                best_image_response = resp.image_response
-                best_vision_tform   = vision_tform
-
-    return best_obj, best_image_response, best_vision_tform
+def _get_walking_params(max_linear_vel: float = 0.5, max_rotation_vel: float = 0.5):
+    """
+    Build SE2VelocityLimit mobility params for velocity-limited walking.
+    Ported directly from object_detection/fetch.py.
+    """
+    from bosdyn.api import geometry_pb2 as _geo
+    max_vel_linear = _geo.Vec2(x=max_linear_vel, y=max_linear_vel)
+    max_vel_se2    = _geo.SE2Velocity(linear=max_vel_linear, angular=max_rotation_vel)
+    vel_limit      = _geo.SE2VelocityLimit(max_vel=max_vel_se2)
+    params = RobotCommandBuilder.mobility_params()
+    params.vel_limit.CopyFrom(vel_limit)
+    return params
 
 # ── Skill functions ───────────────────────────────────────────────────────────
 
@@ -756,10 +732,7 @@ def navigate(
 
         # Resolve human-readable name -> GraphNav UUID via WAYPOINT_MAP.
         # Falls back to the raw string if not found (allows UUID passthrough).
-        resolved = WAYPOINT_MAP.get(waypoint_id.lower(), waypoint_id)
-        if resolved != waypoint_id:
-            print(f"[spot] navigate: '{waypoint_id}' -> '{resolved}'")
-        waypoint_id = resolved
+        waypoint_id = _resolve_waypoint(waypoint_id)
 
         # SDK 5.1.1: TravelParams moved to graph_nav_pb2
         # Probe both locations for safety across minor version differences.
@@ -899,12 +872,13 @@ def locate(
                       f"center=({cx:.0f},{cy:.0f})")
                 return SkillResult(
                     True, skill, f"Found '{object_label}' via NCB server",
-                    {"object_label": object_label,
-                     "found":        True,
-                     "bbox":         bbox,
-                     "confidence":   conf,
-                     "ncb_obj":      obj,
-                     "ncb_image":    image_resp,
+                    {"object_label":    object_label,
+                     "found":           True,
+                     "bbox":            bbox,
+                     "confidence":      conf,
+                     "ncb_obj":         obj,
+                     "ncb_image":       image_resp,
+                     "ncb_vision_tform": vision_tform,
                     }
                 )
             else:
@@ -969,7 +943,36 @@ def pick_up(
             raw_bbox = bbox
 
         if ncb_obj is not None and ncb_image is not None:
-            # NCB path — pixel center from polygon, image frame from response
+            # ── NCB path ─────────────────────────────────────────────────────
+            # Step 1: if we have depth/vision transform, walk toward the object
+            # before grasping (fetch.py pattern).  Limits speed to 0.5 m/s so
+            # SPOT doesn't charge the object and knock it over.
+            ncb_vision_tform = bbox.get("ncb_vision_tform") if isinstance(bbox, dict) else None
+            if ncb_vision_tform is not None:
+                try:
+                    from bosdyn.api import geometry_pb2 as _geo
+                    from bosdyn.client.robot_command import block_for_trajectory_cmd
+                    walk_pos, walk_yaw = _compute_stand_location_and_yaw(
+                        ncb_vision_tform, robot.state_client, distance_margin=1.0
+                    )
+                    se2_pose = _geo.SE2Pose(
+                        position=_geo.Vec2(x=walk_pos[0], y=walk_pos[1]),
+                        angle=walk_yaw,
+                    )
+                    move_cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
+                        se2_pose,
+                        frame_name=VISION_FRAME_NAME,
+                        params=_get_walking_params(0.5, 0.5),
+                    )
+                    cmd_id = robot.command_client.robot_command(
+                        command=move_cmd, end_time_secs=time.time() + 5.0
+                    )
+                    block_for_trajectory_cmd(robot.command_client, cmd_id, timeout_sec=5)
+                    print(f"[pick_up] Walked to object position")
+                except Exception as walk_err:
+                    print(f"[pick_up] Walk-to-object failed ({walk_err}) — attempting grasp in place")
+
+            # Step 2: pixel center from polygon, image frame from NCB helper
             cx, cy = _find_center_px(ncb_obj.image_properties.coordinates)
             image_response = ncb_image
             print(f"[pick_up] Using NCB image frame, center=({cx:.0f},{cy:.0f})")
