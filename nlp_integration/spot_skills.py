@@ -98,7 +98,7 @@ NAVIGATE_POLL_SEC: float = 0.5
 
 # Arm
 ARM_READY_TIMEOUT_SEC: float = 5.0
-GRASP_TIMEOUT_SEC: float = 15.0
+GRASP_TIMEOUT_SEC: float = 30.0
 DELIVER_TIMEOUT_SEC: float = 8.0
 
 # ── GraphNav map ─────────────────────────────────────────────────────────────
@@ -109,11 +109,11 @@ MAP_PATH: str = os.environ.get("SPOT_MAP_PATH", "maps/trial_space")
 # Human-readable waypoint name -> GraphNav UUID.
 # Populate this after running record_map.py — copy the printed WAYPOINT_MAP
 # dict here. Navigate() resolves names through this table before calling SDK.
-WAYPOINT_MAP: dict = {
-    # "desk":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "table":   "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "kitchen": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    # "user":    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+WAYPOINT_MAP: dict[str, str] = {
+    "desk": "nth-baboon-jq0zrIx2gNgWyYPcofpxeA==",
+    "table": "trusty-afghan-2Bh8H49oMK7fK3cGD7CRZg==",
+    "kitchen": "flawed-hippo-8AFk0u6fBA2ep49+vGf5tw==",
+    "user": "hogged-bass-pds8cQw3c+UaJpv85IJyOw==",
 }
 
 def _resolve_waypoint(name: str) -> str:
@@ -656,7 +656,7 @@ def _ncb_get_object(
 def _compute_stand_location_and_yaw(
     vision_tform_target,
     robot_state_client,
-    distance_margin: float = 1.0,
+    distance_margin: float = 0.8,
 ) -> tuple:
     """
     Compute a standing position distance_margin metres from the target,
@@ -763,7 +763,6 @@ def navigate(
             if status in (
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
                 graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
-                graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_OVERIDDEN,
             ):
                 return SkillResult(False, skill,
                                    f"Navigation failed (status = {status})",
@@ -1005,20 +1004,14 @@ def pick_up(
 
         # Palm-to-fingertip position: ~0.5 works well for small objects.
         # Use 0.0 (full gripper) for larger objects like backpacks or laptops.
-        grasp.grasp_params.grasp_palm_to_fingertip = 0.5
+        grasp.grasp_params.grasp_palm_to_fingertip = 0.0
 
-        # Top-down orientation constraint — gripper x-axis aligned with -Z
-        # (gravity) in the vision frame.  Allows ±15° tolerance (0.25 rad).
-        axis_on_gripper   = geometry_pb2.Vec3(x=1, y=0, z=0)
-        axis_to_align     = geometry_pb2.Vec3(x=0, y=0, z=-1)
+        axis_on_gripper = geometry_pb2.Vec3(x=1, y=0, z=0)
+        axis_to_align   = geometry_pb2.Vec3(x=0, y=0, z=-1)
         constraint = grasp.grasp_params.allowable_orientation.add()
-        constraint.vector_alignment_with_tolerance.axis_on_gripper_ewrt_gripper.CopyFrom(
-            axis_on_gripper
-        )
-        constraint.vector_alignment_with_tolerance.axis_to_align_with_ewrt_frame.CopyFrom(
-            axis_to_align
-        )
-        constraint.vector_alignment_with_tolerance.threshold_radians = 0.25
+        constraint.vector_alignment_with_tolerance.axis_on_gripper_ewrt_gripper.CopyFrom(axis_on_gripper)
+        constraint.vector_alignment_with_tolerance.axis_to_align_with_ewrt_frame.CopyFrom(axis_to_align)
+        constraint.vector_alignment_with_tolerance.threshold_radians = 1.04  # ~60° — allows side grasp
         grasp.grasp_params.grasp_params_frame_name = VISION_FRAME_NAME
 
         # ── Send and poll ─────────────────────────────────────────────────────
@@ -1052,12 +1045,16 @@ def pick_up(
 
             if state == manipulation_api_pb2.MANIP_STATE_GRASP_SUCCEEDED:
                 print()
-                # Move to carry position so the object doesn't drag while walking
                 carry_cmd = RobotCommandBuilder.arm_carry_command()
-                robot.command_client.robot_command(carry_cmd)
-                time.sleep(0.75)
+                carry_id  = robot.command_client.robot_command(carry_cmd)
+                # Block until the arm reaches carry position before handing off to navigate
+                try:
+                    block_for_trajectory_cmd(robot.command_client, carry_id, timeout_sec=3.0)
+                except Exception:
+                    time.sleep(2.0)  # fallback if block_for_trajectory_cmd doesn't support arm cmds
                 return SkillResult(True, skill, f"Grasped '{object_label}'",
-                                   {"object_label": object_label})
+                                {"object_label": object_label})
+            
             if state in FAILED_STATES:
                 print()
                 return SkillResult(False, skill,

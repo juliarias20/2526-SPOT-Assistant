@@ -19,26 +19,36 @@ Extra fields logged vs. dry-run (evaluate_phase4.py):
 Usage:
     $env:SPOT_START_WAYPOINT = "your-start-uuid-here"
     $env:USE_SPOT    = "true"
-    $env:SPOT_IP     = "192.168.80.3"     # your SPOT's IP
+    $env:SPOT_IP     = "192.168.80.3"
     $env:SPOT_USER   = "user"
     $env:SPOT_PASS   = "yourpassword"
     $env:SPOT_MAP_PATH = "maps/trial_space"
-    python live_trials.py
-
-Output:
-    data/live_trials.jsonl      -- per-trial log (appends on re-run)
-    data/live_trials_<run>.json -- full run summary with all records + metrics
+    python live_trials.py --offline
 """
 
-import json
-import os
-import signal
 import sys
+import os
+
+# ── Offline mode — must be set before any HuggingFace imports ────────────────
+# Mirrors the same block in run.py. HF_HUB_OFFLINE=1 covers transformers,
+# sentence-transformers, and tokenizers (shared huggingface_hub backend).
+_offline = (
+    "--offline" in sys.argv
+    or os.environ.get("OFFLINE_MODE", "false").lower() == "true"
+)
+if _offline:
+    os.environ["HF_HUB_OFFLINE"]      = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"]  = "1"
+    print("[live_trials] Offline mode enabled — using cached models only.")
+
+import json
+import signal
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import argparse
 
@@ -53,6 +63,11 @@ LOG_FILE = Path("data/live_trials.jsonl")
 # ── Trial set ─────────────────────────────────────────────────────────────────
 # 20 trials across 7 categories, mirroring the dry-run set for direct comparison.
 # object_at: which waypoint the object should be staged at for multi-step trials.
+#
+# Object selection rationale:
+#   pen, bottle, notebook, backpack — small/medium, graspable, thesis-standard
+#   mug    — replaces scissors: larger, household-common, handle aids grasp
+#   box    — replaces laptop:   common, flat surfaces, safe grasp geometry
 LIVE_TRIALS = [
     # ── retrieve_object (5) ───────────────────────────────────────────────────
     {
@@ -65,19 +80,19 @@ LIVE_TRIALS = [
     },
     {
         "id": "L02", "category": "retrieve_object",
-        "command": "Hand me the scissors",
+        "command": "Hand me the mug",
         "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
-        "expected_object": "scissors", "expected_waypoint": None,
+        "expected_object": "mug", "expected_waypoint": None,
         "expected_success": True,
-        "setup_note": "Scissors visible from start position.",
+        "setup_note": "Mug upright on surface, visible from start position.",
     },
     {
         "id": "L03", "category": "retrieve_object",
-        "command": "Get me the laptop",
+        "command": "Get me the box",
         "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
-        "expected_object": "laptop", "expected_waypoint": None,
+        "expected_object": "box", "expected_waypoint": None,
         "expected_success": True,
-        "setup_note": "Laptop open/flat on surface, visible from start position.",
+        "setup_note": "Small cardboard box on surface, visible from start position.",
     },
     {
         "id": "L04", "category": "retrieve_object",
@@ -106,11 +121,11 @@ LIVE_TRIALS = [
     },
     {
         "id": "L07", "category": "multi_step_retrieve",
-        "command": "Head to the table and grab me a cup",
+        "command": "Head to the table and grab me a mug",
         "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
-        "expected_object": "cup", "expected_waypoint": "table",
+        "expected_object": "mug", "expected_waypoint": "table",
         "expected_success": True,
-        "setup_note": "Cup staged at table waypoint.",
+        "setup_note": "Mug staged at table waypoint.",
     },
     {
         "id": "L08", "category": "multi_step_retrieve",
@@ -118,7 +133,7 @@ LIVE_TRIALS = [
         "expected_plan": ["navigate", "locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "charger", "expected_waypoint": "table",
         "expected_success": True,
-        "setup_note": "Charger staged at table waypoint alongside cup.",
+        "setup_note": "Charger staged at table waypoint alongside mug.",
     },
     {
         "id": "L09", "category": "multi_step_retrieve",
@@ -147,11 +162,11 @@ LIVE_TRIALS = [
     },
     {
         "id": "L12", "category": "vague_retrieve",
-        "command": "Hand me something sharp",
+        "command": "Bring me something I can drink from",
         "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
-        "expected_object": "scissors", "expected_waypoint": None,
+        "expected_object": "mug", "expected_waypoint": None,
         "expected_success": True,
-        "setup_note": "Scissors visible. Affordance: sharp → scissors.",
+        "setup_note": "Mug visible. Affordance: drink → mug (has handle, distinct from bottle).",
     },
     {
         "id": "L13", "category": "vague_retrieve",
@@ -159,7 +174,7 @@ LIVE_TRIALS = [
         "expected_plan": ["locate", "pick_up", "navigate_return", "deliver", "release"],
         "expected_object": "backpack", "expected_waypoint": None,
         "expected_success": True,
-        "setup_note": "Backpack visible. Affordance: carry → backpack. Harder phrase.",
+        "setup_note": "Backpack visible. Affordance: carry → backpack.",
     },
     # ── locate_object (2) ────────────────────────────────────────────────────
     {
@@ -281,10 +296,8 @@ def extract_live_fields(result: ExecutionResult, parsed: Dict) -> Dict[str, Any]
     """
     grounding = parsed.get("grounding") or {}
 
-    # Detection source: "spot" if live camera was used, "mock" otherwise
     detection_source = grounding.get("source", "unknown")
 
-    # Best match detection confidence (from top candidate if available)
     detection_conf = None
     top_candidates = grounding.get("top_candidates", [])
     if top_candidates:
@@ -314,7 +327,7 @@ def run_trial(
     """Execute one trial and return the full log record."""
 
     t_start = time.time()
-    result = executor.execute(trial["command"])
+    result  = executor.execute(trial["command"])
     elapsed = time.time() - t_start
 
     # Re-interpret to extract params (same as evaluate_phase4.py)
@@ -393,7 +406,6 @@ def aggregate(records: List[Dict]) -> Dict[str, Any]:
     total_steps     = sum(r["n_steps"] for r in records)
     total_recovered = sum(r["n_recovered"] for r in records)
     total_retries   = sum(r["n_retries_total"] for r in records)
-    total_grasps    = sum(r.get("grasp_attempts", 0) for r in records)
     grasp_trials    = [r for r in records if r.get("grasp_attempts", 0) > 0]
     grasp_success   = sum(1 for r in grasp_trials if r["success"])
 
@@ -420,7 +432,6 @@ def aggregate(records: List[Dict]) -> Dict[str, Any]:
         "total_steps":      total_steps,
         "total_recovered":  total_recovered,
         "total_retries":    total_retries,
-        "total_grasps":     total_grasps,
         "grasp_trials":     len(grasp_trials),
         "grasp_success":    grasp_success,
         "skill_failures":   dict(sorted(skill_failures.items(),
@@ -429,9 +440,8 @@ def aggregate(records: List[Dict]) -> Dict[str, Any]:
     }
 
 def print_report(records: List[Dict], m: Dict, run_id: str) -> None:
-    W = 62
-    is_live = os.environ.get("USE_SPOT", "false").lower() == "true"
-    mode    = "LIVE" if is_live else "DRY-RUN (mock)"
+    W    = 62
+    mode = "LIVE" if os.environ.get("USE_SPOT", "false").lower() == "true" else "DRY-RUN (mock)"
 
     print("\n" + "═" * W)
     print("  Phase IV Live Trial Report")
@@ -453,7 +463,7 @@ def print_report(records: List[Dict], m: Dict, run_id: str) -> None:
         pa = m["plan_correct"] / m["plan_trials"]
         print(f"   {m['plan_correct']}/{m['plan_trials']}  {pa:.1%}  {bar(pa)}")
     else:
-        print("   No annotated plans -- skipped.")
+        print("   No annotated plans — skipped.")
 
     # 3. Object extraction
     print(f"\n── 3. Object Extraction Accuracy")
@@ -530,22 +540,23 @@ def print_report(records: List[Dict], m: Dict, run_id: str) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # ── CLI arguments ─────────────────────────────────────────────────────────
     parser = argparse.ArgumentParser(
         description="SPOT Live Trial Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python live_trials.py                          # live trials, no feed
-  python live_trials.py --live-feed              # with local YOLO feed window
-  python live_trials.py --live-feed \
-      --use-compute-server                       # with NCB server feed
+  python live_trials.py --offline
+  python live_trials.py --offline --live-feed
+  python live_trials.py --offline --live-feed --use-compute-server
         """,
     )
+    parser.add_argument("--offline", action="store_true",
+                        help="Run fully offline using cached models. "
+                             "Run cache_models.py once while online first.")
     parser.add_argument("--live-feed", action="store_true",
                         help="Show live camera feed with YOLO bounding boxes during trials")
     parser.add_argument("--use-compute-server", action="store_true",
-                        help="Route feed detections through object_detection/network_compute_server.py")
+                        help="Route feed detections through network_compute_server.py")
     parser.add_argument("--server", default="fetch-server",
                         help="NCB server service name (default: fetch-server)")
     parser.add_argument("--model", default="yolov8n",
@@ -563,15 +574,15 @@ Examples:
     print(f"  Trials : {len(LIVE_TRIALS)}")
     print(f"  Log    : {LOG_FILE}")
     if args.live_feed:
-        feed_mode = f"compute-server ({args.server}/{args.model})" \
-            if args.use_compute_server else "local YOLO"
+        feed_mode = (f"compute-server ({args.server}/{args.model})"
+                     if args.use_compute_server else "local YOLO")
         print(f"  Feed   : {feed_mode}")
     print("═" * 62)
     print("\n  Type 'n' at any ready prompt to exit and save completed trials.")
     print("  Ctrl+C also exits safely and saves.\n")
 
     # ── Graceful Ctrl+C handler ───────────────────────────────────────────────
-    feed_thread = None  # defined here so _handle_interrupt can reference it
+    feed_thread = None
 
     def _handle_interrupt(sig, frame):
         print("\n\n  [!] Interrupted. Saving completed trials...")
@@ -588,12 +599,12 @@ Examples:
     executor    = TaskExecutor(robot, interpreter=interpreter)
     robot.connect()
 
-    # Debug snapshot: capture front camera, run YOLO, save debug_camera.jpg.
-    # Called here (after interpreter is built) so _get_perception() reuses
-    # the already-loaded SentenceTransformer embedder instead of creating
-    # a second one. Open debug_camera.jpg to verify detections before trials.
+    # Warm the PerceptionModule singleton and capture a debug camera snapshot.
+    # _get_perception() loads its own SentenceTransformer independently —
+    # do NOT pass embedder= here (Phase1Interpreter no longer exposes .embedder
+    # after the BERT migration).
     if robot.connected:
-        _get_perception(embedder=interpreter.embedder)   # warm the singleton
+        _get_perception()
         robot._debug_camera_snapshot()
 
     # ── Start live feed thread ────────────────────────────────────────────────
@@ -613,25 +624,23 @@ Examples:
     try:
         for i, trial in enumerate(LIVE_TRIALS, 1):
 
-            # ── Ready prompt ─────────────────────────────────────────────────
             if not prompt_ready(trial, i, len(LIVE_TRIALS)):
                 print(f"\n  Exiting after {len(records)} completed trial(s).")
                 break
 
-            # ── Run trial ────────────────────────────────────────────────────
             record = run_trial(executor, trial, run_id)
 
-            # ── Operator notes ───────────────────────────────────────────────
             tag    = "O " if record["success_correct"] else "X "
-            p_tag  = "plan O" if record["plan_correct"] else ("plan X" if record["plan_correct"] is False else "plan -")
-            o_tag  = f"obj = {record['predicted_object']!r}" if record["predicted_object"] else "obj = ?"
+            p_tag  = ("plan O" if record["plan_correct"]
+                      else ("plan X" if record["plan_correct"] is False else "plan -"))
+            o_tag  = (f"obj = {record['predicted_object']!r}"
+                      if record["predicted_object"] else "obj = ?")
             status = "SUCCESS" if record["success"] else "FAILED "
             print(f"\n  {tag} {status}  {p_tag}  {o_tag}  ({record['elapsed_sec']:.2f}s)")
 
             notes = prompt_notes()
             record["operator_notes"] = notes
 
-            # ── Save immediately ─────────────────────────────────────────────
             records.append(record)
             append_jsonl(LOG_FILE, record)
             print(f"  [saved] {trial['id']} logged to {LOG_FILE}")
@@ -642,6 +651,7 @@ Examples:
             feed_thread.join(timeout=2)
         robot.disconnect()
         _finalize(records, run_id)
+
 
 def _finalize(records: List[Dict], run_id: str) -> None:
     """Print report and save summary JSON for however many trials completed."""
