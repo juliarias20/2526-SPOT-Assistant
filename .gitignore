@@ -6,5 +6,6 @@ __pycache__/
 spot-sdk/
 
 nlp_integration/models/bert-spot-intent
+nlp_integration/models/whisper
 
 object_detection/*output.jpg
