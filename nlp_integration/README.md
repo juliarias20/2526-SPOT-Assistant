@@ -15,23 +15,25 @@ A context-aware natural language command interpretation framework for autonomous
 │   ├── live_trials.py            # 20-trial live evaluation runner
 │   ├── record_map.py             # GraphNav map recording utility
 │   ├── cache_models.py           # One-time model download script (run before going offline)
+│   ├── voice_input.py            # Push-to-talk speech-to-text module (--voice flag)
 │   ├── interpret.py              # Phase I: NLP interpretation
-│   ├── executor.py               # Phase IV: task execution
+│   ├── executor.py               # Phase IV: task execution + scan-and-search fallback
 │   ├── perception.py             # Phase III: perceptual grounding
-│   ├── spot_skills.py            # SPOT SDK skill primitives
+│   ├── spot_skills.py            # SPOT SDK skill primitives + fetch.py grasp integration
 │   ├── evaluate_phase1.py        # Phase I evaluator
 │   ├── evaluate_phase2.py        # Phase II evaluator
 │   ├── evaluate_phase3.py        # Phase III evaluator
 │   ├── evaluate_phase4.py        # Phase IV evaluator
 │   ├── models/                   # Local model files (not tracked by git)
 │   │   ├── bert-spot-intent/     # Fine-tuned BERT intent classifier (from Anvil)
-│   │   └── sentence_transformers/# Cached SentenceTransformer weights (from cache_models.py)
+│   │   ├── sentence_transformers/# Cached SentenceTransformer weights (from cache_models.py)
+│   │   └── whisper/              # Cached faster-whisper weights (from cache_models.py)
 │   ├── data/                     # Gold datasets + trial logs
 │   └── maps/                     # GraphNav map files (after record_map.py)
 └── object_detection/             # External YOLO detection server (optional)
     ├── network_compute_server.py # NCB server — serves custom YOLO models to SPOT
-    ├── fetch.py                  # Reference grasp script (Boston Dynamics tutorial)
-    ├── live_cam_detection.py     # Live camera feed with bounding boxes
+    ├── fetch.py                  # Reference grasp script (integrated into spot_skills.py)
+    ├── live_cam_detection.py     # Standalone live camera feed with bounding boxes
     ├── YOLO_SPOT.ipynb           # Google Colab notebook to train custom models
     ├── models/                   # Custom trained .pt model files
     └── requirements.txt
@@ -50,6 +52,12 @@ A context-aware natural language command interpretation framework for autonomous
 ```powershell
 cd nlp_integration
 pip install -r requirements.txt
+```
+
+For voice input (optional — only needed for `--voice` flag):
+
+```powershell
+pip install faster-whisper sounddevice numpy
 ```
 
 For GPU / CUDA support with PyTorch, select your version at https://pytorch.org/get-started/locally/ before installing.
@@ -71,11 +79,19 @@ python cache_models.py
 
 This downloads and caches:
 - `sentence-transformers/all-MiniLM-L6-v2` → `models/sentence_transformers/`
+- `faster-whisper base.en` → `models/whisper/` (only if faster-whisper is installed)
 - `spaCy en_core_web_sm` (if not already installed)
 - Verifies `models/bert-spot-intent/` weights are present
 - Verifies `yolov8n.pt` is present (downloads if missing)
 
-If the BERT model is missing, run `finetune_bert.py` on Purdue Anvil first (see training section below).
+If the BERT model is missing, run `finetune_bert.py` on Purdue Anvil first (see retraining section below).
+
+**If a download is interrupted and leaves a corrupted cache**, delete the affected subdirectory and re-run:
+
+```powershell
+Remove-Item -Recurse -Force .\models\sentence_transformers\
+python cache_models.py
+```
 
 ### 2. Record the GraphNav map (live SPOT only)
 
@@ -116,7 +132,9 @@ WAYPOINT_MAP: dict = {
 }
 ```
 
-**Note:** `LOCATION_NOUNS` in `executor.py` is automatically derived from `WAYPOINT_MAP` keys, so you do not need to update it separately. Waypoint name matching also handles partial matches — `"kit"` will resolve to `"kitchen"`, `"work"` will resolve to `"workspace"`, etc.
+**Notes:**
+- `LOCATION_NOUNS` in `executor.py` is automatically derived from `WAYPOINT_MAP` keys — no separate update needed.
+- Waypoint name resolution handles partial and substring matches: `"kit"` resolves to `"kitchen"`, `"work"` resolves to `"workspace"`. A `[spot] WARNING:` line is printed if a name cannot be matched.
 
 ### 4. Set SPOT_START_WAYPOINT
 
@@ -131,6 +149,8 @@ Place objects in view from the appropriate waypoints:
 | Visible from start | pen, mug, box, bottle, backpack |
 | Desk waypoint | notebook, pen, stapler |
 | Table waypoint | mug, charger |
+
+> **Note:** Mug appears in both the start position (trials L02, L12) and the table waypoint (L07). Stage two mugs or move the single mug between those trials.
 
 ---
 
@@ -147,7 +167,6 @@ All skills execute in dry-run mode and print what they would do. No SPOT connect
 SPOT> bring me the pen
 SPOT> go to the desk and bring me the notebook
 SPOT> bring me something to write with
-SPOT> hand me something sharp
 SPOT> scan the room
 SPOT> find my backpack
 SPOT> exit
@@ -198,6 +217,21 @@ SPOT> feed off      # stop feed
 SPOT> status        # show connection and feed status
 ```
 
+### With voice input (push-to-talk)
+
+```powershell
+python run.py --offline --voice
+```
+
+Enables push-to-talk speech-to-text via the local microphone using faster-whisper (`base.en`, English-only, runs fully on CPU). The flow at each prompt:
+
+1. Press **Enter** to start recording
+2. Speak your command
+3. Press **Enter** again to stop
+4. The transcript is displayed — press Enter to confirm, type a correction, or `s` to skip
+
+Voice input runs fully offline after `cache_models.py` has been run. Whisper weights are stored in `models/whisper/` and never contact HuggingFace Hub at runtime. If `faster-whisper` is not installed, `--voice` silently falls back to typed input.
+
 ### With Network Compute Server (custom YOLO model)
 
 Use this to run a custom-trained model from `object_detection/models/` for detection.
@@ -209,7 +243,6 @@ cd nlp_integration
 
 python ..\object_detection\network_compute_server.py `
     -m ..\object_detection\models\<your_model>\<your_model>.pt `
-    --username user --password yourpassword `
     192.168.80.3
 ```
 
@@ -234,9 +267,30 @@ python run.py --offline --live-feed --use-compute-server
 
 When `USE_COMPUTE_SERVER=true`:
 - `locate()` and `pick_up()` query the NCB server across all five fisheye cameras
-- If the server is unreachable, the framework automatically falls back to local YOLO
 - If the object is not immediately visible, SPOT performs up to 4 scan rotations (one full 360°) before reporting failure
+- If the server is unreachable, the framework automatically falls back to local YOLO
 - The live feed shows **orange boxes** for NCB detections and **green boxes** for local YOLO
+
+### Full defense demo setup
+
+```powershell
+# Terminal 1 — detection server
+python ..\object_detection\network_compute_server.py `
+    -m ..\object_detection\models\x_block_model\x_block_model.pt `
+    192.168.80.3
+
+# Terminal 2 — run.py with all features
+$env:USE_SPOT            = "true"
+$env:SPOT_IP             = "192.168.80.3"
+$env:SPOT_USER           = "user"
+$env:SPOT_PASS           = "yourpassword"
+$env:SPOT_MAP_PATH       = "maps/trial_space"
+$env:SPOT_START_WAYPOINT = "paste-user-waypoint-uuid-here"
+$env:USE_COMPUTE_SERVER  = "true"
+$env:NCB_MODEL_NAME      = "x_block_model"
+
+python run.py --offline --live-feed --use-compute-server --voice
+```
 
 ---
 
@@ -359,7 +413,8 @@ After training, copy the output directory to `models/bert-spot-intent/`. Then re
 
 | Flag | Description |
 |---|---|
-| `--offline` | Run fully offline using cached models — recommended for all lab sessions |
+| `--offline` | Run fully offline using cached models — recommended for all sessions |
+| `--voice` | Enable push-to-talk speech input via microphone |
 | `--live-feed` | Open camera feed window on connect |
 | `--use-compute-server` | Use NCB server for feed and task detections |
 | `--server <name>` | NCB server name (default: `fetch-server`) |
@@ -376,14 +431,31 @@ Place an AprilTag in SPOT's view before connecting, or set `SPOT_START_WAYPOINT`
 **Navigate command doesn't resolve a location**
 Ensure the location name is in `WAYPOINT_MAP` in `spot_skills.py`. The resolver handles partial matches (`"kit"` → `"kitchen"`) but the base name must exist as a key. Check the `[spot] WARNING:` line in the output to see exactly what name was passed.
 
+**Navigation returns STATUS_COMMAND_OVERRIDDEN**
+This is a transient status that fires during command handoff (e.g. between arm carry and navigate). The framework treats it as non-terminal and continues polling. If navigation still fails, check that the arm carry command fully settled before navigate started.
+
 **Gray box in live feed / no detections**
-The NCB server is not returning image data (this is expected — it only returns bounding boxes). The feed fetches the frame directly from SPOT's ImageClient. If the window is gray, verify the `--use-compute-server` flag is set correctly (note: `--use-commpute-server` with a double `m` is silently ignored).
+The NCB server only returns bounding boxes, not image data — this is expected. The feed fetches frames directly from SPOT's ImageClient. If the window is gray, verify `--use-compute-server` is spelled correctly (double `m` in `--use-commpute-server` is silently ignored by argparse).
 
 **Object not found during fetch task**
-SPOT will automatically rotate up to 4 times (one full 360°) scanning for the object before reporting failure. If it still fails, verify the object is within SPOT's camera range and the model confidence threshold (`NCB_CONFIDENCE`) is not set too high.
+SPOT automatically rotates up to 4 times (one full 360°) scanning for the object before reporting failure. If it still fails, verify the object is within SPOT's camera range and `NCB_CONFIDENCE` is not set too high.
+
+**Grasp fails with MANIP_STATE_GRASP_PLANNING_NO_SOLUTION**
+The grasp planner rejected all candidate poses. This usually means SPOT is too far from the object or the orientation tolerance is too narrow for that object shape. The framework retries automatically. If all retries fail, try moving the object slightly or reducing `distance_margin` in `_compute_stand_location_and_yaw` from `1.0` to `0.8`.
+
+**Voice input fails with HF_HUB_OFFLINE error**
+Run `cache_models.py` while online first to download the Whisper weights to `models/whisper/`. After that, `--offline --voice` works fully air-gapped. If `faster-whisper` is not installed, `--voice` silently falls back to typed input with no error.
+
+**Corrupted model cache (JSONDecodeError on startup)**
+A download was interrupted and left a partial file. Delete the affected directory and re-run `cache_models.py`:
+
+```powershell
+Remove-Item -Recurse -Force .\models\sentence_transformers\
+python cache_models.py
+```
 
 **HuggingFace authentication warnings at startup**
-These are cosmetic — the system is loading from local cache and not downloading anything. Run with `--offline` to suppress them entirely.
+These are cosmetic — the system is loading from local cache. Run with `--offline` to suppress them entirely.
 
 **Behavior faults on connect**
-SPOT clears behavior faults automatically on connect. If SPOT falls or has a fault between sessions, the `connect()` call handles it. If it persists, power cycle SPOT and reconnect.
+SPOT clears behavior faults automatically on connect. If the fault persists, power cycle SPOT and reconnect.
