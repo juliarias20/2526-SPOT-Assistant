@@ -57,6 +57,7 @@ import argparse
 
 from spot_skills import SpotRobot
 from executor import TaskExecutor
+from voice_input import VoiceInput, VOICE_AVAILABLE, check_microphone
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -360,6 +361,8 @@ def main():
                         help="Camera source (default: frontleft_fisheye_image)")
     parser.add_argument("--offline", action="store_true",
                         help="Run fully offline using cached models. Run cache_models.py once while online first.")
+    parser.add_argument("--voice", action="store_true",
+                        help="Enable push-to-talk speech input via microphone (requires faster-whisper and sounddevice).")
     args, _ = parser.parse_known_args()
 
     single_cmd = " ".join(args.command).strip() if args.command else None
@@ -420,12 +423,26 @@ def main():
         robot.disconnect()
         return
 
+    # ── Voice input setup ─────────────────────────────────────────────────────
+    voice = None
+    if args.voice:
+        if not VOICE_AVAILABLE:
+            print("  ⚠  --voice requires: pip install faster-whisper sounddevice numpy")
+            print("  ⚠  Falling back to typed input.\n")
+        elif not check_microphone():
+            print("  ⚠  No microphone detected — falling back to typed input.\n")
+        else:
+            voice = VoiceInput()
+
     # ── Interactive REPL ──────────────────────────────────────────────────────
     print("  Ready. Enter a command:\n")
     try:
         while True:
             try:
-                command = input("  SPOT> ").strip()
+                if voice and voice.ready:
+                    command = voice.listen("  SPOT> ").strip()
+                else:
+                    command = input("  SPOT> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\n  Exiting.")
                 break

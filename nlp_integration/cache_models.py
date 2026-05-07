@@ -48,4 +48,29 @@ else:
     YOLO(yolo_path)
     print(f"  Cached by ultralytics to default location")
 
+print("\nVerifying Whisper model (faster-whisper base.en)...")
+whisper_cache = Path(__file__).parent / "models" / "whisper"
+whisper_cache.mkdir(parents=True, exist_ok=True)
+try:
+    from faster_whisper import WhisperModel
+    WhisperModel(
+        "base.en",
+        device="cpu",
+        compute_type="int8",
+        download_root=str(whisper_cache),
+    )
+    print(f"  OK: {whisper_cache}")
+except ImportError:
+    print("  faster-whisper not installed — skipping (only needed for --voice).")
+    print("  Install with: pip install faster-whisper sounddevice numpy")
+except Exception as e:
+    print(f"  WARNING: Whisper download failed: {e}")
+
+# Also cache custom YOLO model if YOLO_MODEL env var points to one
+custom_model = os.environ.get("YOLO_MODEL", "")
+if custom_model and custom_model != "yolov8n.pt" and os.path.isfile(custom_model):
+    print(f"\nCustom YOLO model found at {custom_model} — no download needed.")
+elif custom_model and not os.path.isfile(custom_model):
+    print(f"\nWARNING: Custom model '{custom_model}' not found at that path.")
+
 print("\nAll models cached. You can now run with --offline.")
