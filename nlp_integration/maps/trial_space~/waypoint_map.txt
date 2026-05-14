@@ -1,0 +1,6 @@
+WAYPOINT_MAP: dict[str, str] = {
+    "desk": "nth-baboon-jq0zrIx2gNgWyYPcofpxeA==",
+    "table": "trusty-afghan-2Bh8H49oMK7fK3cGD7CRZg==",
+    "kitchen": "flawed-hippo-8AFk0u6fBA2ep49+vGf5tw==",
+    "user": "hogged-bass-pds8cQw3c+UaJpv85IJyOw==",
+}

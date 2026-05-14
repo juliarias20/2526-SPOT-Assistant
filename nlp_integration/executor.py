@@ -29,7 +29,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-
+from spot_skills import WAYPOINT_MAP
 from interpret import Phase1Interpreter
 from spot_skills import(
     SKILL_REGISTRY,
@@ -45,8 +45,9 @@ from spot_skills import(
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-MAX_RETRIES: int    = 2     # Retry a failed skill this many times before giving up
-RETRY_DELAY: float  = 1.5   # Seconds between retries
+MAX_RETRIES: int       = 2    # Retry a failed skill this many times before giving up
+RETRY_DELAY: float    = 1.5  # Seconds between retries
+MAX_SCAN_ATTEMPTS: int = 4   # Rotate-and-search cycles before giving up on locate
 
 # ── Intent → skill sequence mapping ──────────────────────────────────────────
 # Maps a whole-command intent label to an ordered list of skill names.
@@ -60,12 +61,14 @@ INTENT_SKILL_MAP: Dict[str, List[str]] = {
     "multi_step_manipulation":["locate", "pick_up", "navigate", "deliver", "release"],
 }
 
-# Nouns that identify a place (waypoint) rather than a retrieve target.
-# Used by _extract_params to separate navigation destinations from objects.
-LOCATION_NOUNS: frozenset = frozenset({
+# Derive location nouns directly from WAYPOINT_MAP keys so that adding a new
+# waypoint to spot_skills.py automatically makes it recognizable in commands.
+# The static fallback set covers cases where WAYPOINT_MAP is empty (dry-run).
+_STATIC_LOCATION_NOUNS: frozenset = frozenset({
     "desk", "table", "kitchen", "room", "shelf",
     "door", "counter", "lab", "office", "hallway", "closet",
 })
+LOCATION_NOUNS: frozenset = _STATIC_LOCATION_NOUNS | frozenset(WAYPOINT_MAP.keys())
 
 # Pronouns that spaCy may surface as object entities (e.g. "me" lemmatizes to "I").
 # These are never valid retrieve targets and must be excluded from explicit objects.
@@ -83,12 +86,13 @@ PRONOUNS: frozenset = frozenset({
 # ── Result types ──────────────────────────────────────────────────────────────
 @dataclass
 class StepLog:
-    step_id:    str
-    skill:      str
-    success:    bool
-    message:    str
-    retries:    int = 0
-    mock:       bool = False
+    step_id:        str
+    skill:          str
+    success:        bool
+    message:        str
+    retries:        int = 0
+    mock:           bool = False
+    _result_data:   Optional[Dict[str, Any]] = field(default=None, repr=False)
 
 @dataclass
 class ExecutionResult:
@@ -240,7 +244,7 @@ class TaskExecutor:
                     label = params.get("object_label", "unknown_object")
                     bbox = params.get("bbox")
                     if skill_name == "locate":
-                        last_result = skill_fn(self.robot, label)
+                        last_result = self._locate_with_scan(label, params)
                     else:
                         last_result = skill_fn(self.robot, label, bbox)
                 elif skill_name in ("deliver",):
@@ -255,12 +259,58 @@ class TaskExecutor:
                 break
         
         return StepLog(
-            step_id = step_id,
-            skill = skill_name,
-            success = last_result.success,
-            message = last_result.message,
-            retries = attempt,
-            mock = last_result.mock,
+            step_id      = step_id,
+            skill        = skill_name,
+            success      = last_result.success,
+            message      = last_result.message,
+            retries      = attempt,
+            mock         = last_result.mock,
+            _result_data = last_result.data if last_result else None,
+        )
+
+    # ── Locate with scan-and-search fallback ─────────────────────────────────
+
+    def _locate_with_scan(self, label: str, params: Dict[str, Any]) -> SkillResult:
+        """
+        Try locate(). If the object isn't found, perform a scan step and
+        retry locate(). Repeats up to MAX_SCAN_ATTEMPTS full rotate-and-search
+        cycles, stopping as soon as the object is detected.
+
+        The successful SkillResult from locate() is returned directly so that
+        the executor can forward ncb_obj / ncb_image / ncb_vision_tform to
+        pick_up() unchanged.
+        """
+        result = locate(self.robot, label)
+        if result.success and result.data.get("found"):
+            return result
+
+        print(f"    [executor] '{label}' not in view — starting scan-and-search "
+              f"(max {MAX_SCAN_ATTEMPTS} rotations)...")
+
+        for attempt in range(1, MAX_SCAN_ATTEMPTS + 1):
+            print(f"    [executor] Scan attempt {attempt}/{MAX_SCAN_ATTEMPTS}...")
+            scan_result = scan(self.robot)
+            if not scan_result.success:
+                print(f"    [executor] Scan failed: {scan_result.message}")
+                # Scan failure is non-fatal — try locate anyway in case SPOT
+                # already rotated enough to see the object.
+
+            result = locate(self.robot, label)
+            if result.success and result.data.get("found"):
+                print(f"    [executor] '{label}' found after {attempt} scan(s).")
+                return result
+
+            print(f"    [executor] '{label}' still not found after scan {attempt}.")
+
+        # Exhausted all scan attempts
+        return SkillResult(
+            success=False,
+            skill="locate",
+            message=(
+                f"'{label}' not found after {MAX_SCAN_ATTEMPTS} scan rotation(s). "
+                "Try moving closer or confirming the object is in the environment."
+            ),
+            data={"object_label": label, "found": False},
         )
 
     # ── Map intent label to skill sequence ────────────────────────────────────
@@ -357,6 +407,13 @@ class TaskExecutor:
 
             if log.retries > 0 and log.success:
                 recovered += 1
+
+            # Forward locate() result data to pick_up so ncb_obj / ncb_image /
+            # ncb_vision_tform are available for the grasp step.
+            if s["skill"] == "locate" and log.success:
+                locate_data = getattr(log, "_result_data", None)
+                if locate_data:
+                    params["bbox"] = locate_data
 
             if not log.success:
                 print(f"    [executor] Step {s['step_id']}:{s['skill']} FAILED -- {log.message}")

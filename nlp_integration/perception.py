@@ -142,7 +142,12 @@ class PerceptionModule:
         if embedder is not None:
             self.embedder = embedder
         else:
-            self.embedder = SentenceTransformer(embedding_model)
+            # Load from local cache — respects HF_HUB_OFFLINE if set
+            _hf_offline = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+            self.embedder = SentenceTransformer(
+                embedding_model,
+                cache_folder=os.path.join(os.path.dirname(__file__), "models", "sentence_transformers"),
+)
 
         # YOLOv8
         self._yolo: Optional[object] = None

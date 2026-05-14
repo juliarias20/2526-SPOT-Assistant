@@ -36,12 +36,28 @@ Live feed modes:
 
 import sys
 import os
+
+# ── Offline mode — must be set before any HuggingFace imports ────────────────
+# Pass --offline flag or set OFFLINE_MODE=true to run fully air-gapped.
+# HF_HUB_OFFLINE=1 covers transformers, sentence-transformers, and tokenizers
+# since they all share the huggingface_hub backend.
+_offline = (
+    "--offline" in sys.argv
+    or os.environ.get("OFFLINE_MODE", "false").lower() == "true"
+)
+if _offline:
+    os.environ["HF_HUB_OFFLINE"]      = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"]  = "1"
+    print("[run] Offline mode enabled — using cached models only.")
+    
 import time
 import threading
 import argparse
 
 from spot_skills import SpotRobot
 from executor import TaskExecutor
+from voice_input import VoiceInput, VOICE_AVAILABLE, check_microphone
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
@@ -181,20 +197,43 @@ class LiveFeedThread(threading.Thread):
             return None
 
     # ── Network compute server mode ───────────────────────────────────────────
-
     def _grab_server(self):
-        """Route detection through object_detection/network_compute_server.py."""
         try:
             import cv2
             import numpy as np
             from google.protobuf import wrappers_pb2
             from bosdyn.api import network_compute_bridge_pb2, image_pb2
+            from bosdyn.client.image import ImageClient
             from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClient
 
+            # ── 1. Fetch raw frame from ImageClient ───────────────────────────────
+            image_client = self.robot.robot.ensure_client(
+                ImageClient.default_service_name
+            )
+            responses = image_client.get_image_from_sources([self.camera_source])
+            if not responses:
+                return None
+
+            resp_img = responses[0]
+            img_bytes = resp_img.shot.image.data
+            fmt = resp_img.shot.image.format
+
+            if fmt == 1:  # JPEG
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            else:
+                w = resp_img.shot.image.cols
+                h = resp_img.shot.image.rows
+                raw = np.frombuffer(img_bytes, dtype=np.uint8).reshape(h, w, -1)
+                frame = cv2.cvtColor(raw, cv2.COLOR_GRAY2BGR) if raw.shape[2] == 1 else raw
+
+            if frame is None:
+                return None
+
+            # ── 2. Send to NCB server for detections ──────────────────────────────
             nc_client = self.robot.robot.ensure_client(
                 NetworkComputeBridgeClient.default_service_name
             )
-
             image_source_and_service = network_compute_bridge_pb2.ImageSourceAndService(
                 image_source=self.camera_source
             )
@@ -212,21 +251,7 @@ class LiveFeedThread(threading.Thread):
             )
             resp = nc_client.network_compute_bridge_command(req)
 
-            # Decode image from response
-            img_data = resp.image_response.shot.image.data
-            fmt = resp.image_response.shot.image.format
-            if fmt == image_pb2.Image.FORMAT_RAW:
-                rows = resp.image_response.shot.image.rows
-                cols = resp.image_response.shot.image.cols
-                frame = np.frombuffer(img_data, dtype=np.uint8).reshape(rows, cols, -1)
-            else:
-                arr = np.frombuffer(img_data, dtype=np.uint8)
-                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
-            if frame is None:
-                return None
-
-            # Draw bounding boxes from server response (orange — distinguishes from local)
+            # ── 3. Draw bounding boxes from server detections ─────────────────────
             annotated = frame.copy()
             for obj in resp.object_in_image:
                 conf_msg = wrappers_pb2.FloatValue()
@@ -334,6 +359,10 @@ def main():
                         help="Model name on compute server (default: yolov8n)")
     parser.add_argument("--camera", default="frontleft_fisheye_image",
                         help="Camera source (default: frontleft_fisheye_image)")
+    parser.add_argument("--offline", action="store_true",
+                        help="Run fully offline using cached models. Run cache_models.py once while online first.")
+    parser.add_argument("--voice", action="store_true",
+                        help="Enable push-to-talk speech input via microphone (requires faster-whisper and sounddevice).")
     args, _ = parser.parse_known_args()
 
     single_cmd = " ".join(args.command).strip() if args.command else None
@@ -370,7 +399,7 @@ def main():
     executor = TaskExecutor(robot, interpreter=interpreter)
 
     if connected:
-        _get_perception(embedder=interpreter.embedder)
+        _get_perception()
         robot._debug_camera_snapshot()
 
     # ── Start live feed thread ────────────────────────────────────────────────
@@ -394,12 +423,26 @@ def main():
         robot.disconnect()
         return
 
+    # ── Voice input setup ─────────────────────────────────────────────────────
+    voice = None
+    if args.voice:
+        if not VOICE_AVAILABLE:
+            print("  ⚠  --voice requires: pip install faster-whisper sounddevice numpy")
+            print("  ⚠  Falling back to typed input.\n")
+        elif not check_microphone():
+            print("  ⚠  No microphone detected — falling back to typed input.\n")
+        else:
+            voice = VoiceInput()
+
     # ── Interactive REPL ──────────────────────────────────────────────────────
     print("  Ready. Enter a command:\n")
     try:
         while True:
             try:
-                command = input("  SPOT> ").strip()
+                if voice and voice.ready:
+                    command = voice.listen("  SPOT> ").strip()
+                else:
+                    command = input("  SPOT> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print("\n  Exiting.")
                 break

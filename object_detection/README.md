@@ -1,6 +1,8 @@
 # Object Detection
+
 ## About
-- This module is to be used on its own for general object detection or with other modules for autonomous assitant functions.
+- This is the Object Detection module of the SPOT Assistant Project.
+- This experimental version is for trying out the YOLO World object detection model.
 
 ## Installation
 - Current working environment
@@ -39,6 +41,10 @@
 
 ## Dataset
 - We have uploaded our datasets in Roboflow: https://universe.roboflow.com/spot-datasets-ectut
+
+## ACCESS Anvil Model Training
+- We have included files used for model training in Anvil as well. It works similarly as the Google Colab notebook for training in which you have to input your Roboflow download link within `import_data.py`.
+- Dependencies are included within `requirements.txt`
 
 ## Image Sources
     - `back_depth`
