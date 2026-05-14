@@ -1,7 +1,6 @@
 # Object Detection
 ## About
 - This is the Object Detection module of the SPOT Assistant Project.
-- Still a work in progress! 
 
 ## Installation
 - Current working environment
@@ -37,6 +36,10 @@
 
 ## Dataset
 - We have uploaded our datasets in Roboflow: https://universe.roboflow.com/spot-datasets-ectut
+
+## ACCESS Anvil Model Training
+- We have included files used for model training in Anvil as well. It works similarly as the Google Colab notebook for training in which you have to input your Roboflow download link within `import_data.py`.
+- Dependencies are included within `requirements.txt`
 
 ## Image Sources
     - `back_depth`
